@@ -1,15 +1,19 @@
 # How it works
 
-`runnerkit add owner/repo` does these things:
+`runnerkit add owner/repo` (or `runnerkit add https://server/owner/repo` for Forgejo, Gitea and
+GitLab) does these things. Each forge is a provider in `internal/forge`; the steps are the same
+and only the runner and its API change (see [providers.md](providers.md)).
 
-1. Checks that the repository is private and that no runner with that name is registered
-   on GitHub yet (looked up by name), so it never takes over another machine's runner by
-   accident.
-2. Downloads the latest official `actions/runner` for this operating system and
-   architecture, checks its SHA-256 and unpacks it into the runnerkit data folder.
-3. Asks GitHub for a registration token and runs the runner's own `config.sh`
-   (`config.cmd` on Windows). The token reaches it through the environment, not the command
-   line, so other users of the machine cannot read it from the process list.
+1. Works out which forge it is, checks that the repository is private and that no runner with
+   that name is registered yet, so it never takes over another machine's runner by accident.
+2. Downloads the latest official runner of that forge for this operating system and
+   architecture, checks its SHA-256 and puts it in the runnerkit data folder.
+3. Registers it. On GitHub it asks for a registration token and runs the runner's own
+   `config.sh` (`config.cmd` on Windows), passing the token through the environment so other
+   users of the machine cannot read it from the process list. Forgejo and Gitea give a
+   registration token that is passed to `register`; GitLab creates a runner through its API
+   and registers the token it returns. Those two tokens appear on the command line of the
+   short `register` call.
 4. Writes a user-level service that starts `runnerkit supervise` for this runner.
 5. Starts it and prints the `runs-on` line to put in your workflow.
 
@@ -54,23 +58,29 @@ behaves the same on all three systems and takes care of what the service manager
   process group is killed.
   On Windows the supervisor puts itself in a job object, so the system also ends the runner
   when the supervisor is ended, and it hides its console window.
-- Jobs do not inherit `GH_TOKEN`, `GITHUB_TOKEN` or `RUNNERKIT_TOKEN`, even if the service
-  was started from a shell that had them.
+- Jobs do not inherit `GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, `FORGEJO_TOKEN`,
+  `GITEA_TOKEN` or `RUNNERKIT_TOKEN`, even if the service was started from a shell that had them.
 - It writes the runner output to `logs/<name>.log`. At 5 MB the log is moved to
   `<name>.log.1`, replacing the previous one.
 
 ## Labels
 
-Every runner gets GitHub's default labels (`self-hosted`, the operating system and the
-architecture) plus `runnerkit` and any you pass with `--labels`. A workflow picks it with
-`runs-on: [self-hosted, linux, x64, runnerkit]`.
+On GitHub every runner gets the default labels (`self-hosted`, the operating system and the
+architecture) plus `runnerkit` and any you pass with `--labels`; a workflow picks it with
+`runs-on: [self-hosted, linux, x64, runnerkit]`. On Forgejo and Gitea the labels are
+`runnerkit`, the system, the architecture and yours, in host mode
+(`runs-on: [runnerkit, linux, x64]`). On GitLab they are the same as tags
+(`tags: [runnerkit, linux, x64]`).
 
 ## Limits of version 1
 
-- GitHub.com only. GitHub Enterprise Server and Forgejo or Gitea runners are not supported yet.
+- GitHub.com, and Forgejo, Gitea and GitLab by repository. GitHub Enterprise Server, servers under
+  a sub-path, and organization or group runners on the other forges are not supported.
 - One job at a time per runner. Add a second runner with another `--name` to run two.
 - Runners are not ephemeral: the work folder persists between jobs, as with any runner you
   install by hand.
-- Job detection looks for the runner's own worker process, by its folder.
+- Job detection: on GitHub it looks for the runner's `Runner.Worker` process, by its folder.
+  Forgejo, Gitea and GitLab run jobs as child processes of the runner, so a runner is busy
+  when its program has any child process.
 - On macOS the service needs a graphical login session. Over SSH on a headless Mac,
   log in on the screen once and run `runnerkit start NAME`.

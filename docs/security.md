@@ -26,13 +26,22 @@ trust you give any script you run. If that is too much:
 
 runnerkit refuses to add a runner, or to run one, as root.
 
+## Host mode on Forgejo, Gitea and GitLab
+
+The runners installed for these forges run jobs directly on your machine, with the shell of your
+user, not in a container (GitHub's runner does the same). Treat a repository served by them as
+trusted code. If you want isolation, run the runner in a virtual machine or give it a
+dedicated account.
+
 ## Tokens
 
-- The token you give runnerkit needs administration write access to the repository (a
-  fine-grained token) or the `repo` scope (a classic token); for an organization, the
-  self-hosted runners permission.
+- The token you give runnerkit needs permission to manage the runners of the repository. The
+  exact scopes for each forge are in [providers.md](providers.md); on GitHub that is
+  administration write access (a fine-grained token) or the `repo` scope (a classic token).
 - runnerkit uses it only while a command runs and never stores it.
-- The runner is registered with a short-lived registration token that GitHub issues from
-  your token. It is handed to the runner through its environment, not on the command line,
-  and is removed from any error message.
-- Jobs do not inherit `GH_TOKEN`, `GITHUB_TOKEN` or `RUNNERKIT_TOKEN`.
+- The runner is registered with a short-lived registration token that the forge issues from
+  your token. On GitHub it is handed to the runner through its environment; the other forges'
+  runners only take it as an argument of the `register` call, which lasts a moment. It is
+  removed from any error message.
+- Jobs do not inherit `GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, `FORGEJO_TOKEN`,
+  `GITEA_TOKEN` or `RUNNERKIT_TOKEN`.
