@@ -1,0 +1,32 @@
+name: Bug report
+description: Something does not install or run the way it should
+body:
+  - type: input
+    id: version
+    attributes:
+      label: runnerkit version
+      description: Output of `runnerkit version`
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened and what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output of `runnerkit doctor` and `runnerkit logs <name>`
+      description: Read it before pasting. Tokens are not written to the log.
+      render: text
