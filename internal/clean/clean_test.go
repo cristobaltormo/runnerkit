@@ -14,6 +14,7 @@ func TestRunDeletesOnlyOldWork(t *testing.T) {
 		os.MkdirAll(p, 0o755)
 		os.WriteFile(filepath.Join(p, "f"), []byte("12345"), 0o644)
 		old := time.Now().Add(-age)
+		os.Chtimes(filepath.Join(p, "f"), old, old)
 		os.Chtimes(p, old, old)
 	}
 	mk("_work/old", 30*24*time.Hour)
@@ -52,5 +53,39 @@ func TestRunDeletesOnlyOldWork(t *testing.T) {
 func TestHuman(t *testing.T) {
 	if Human(512) != "512 B" || Human(2048) != "2.0 KiB" || Human(3<<30) != "3.0 GiB" {
 		t.Fatal("unexpected formatting")
+	}
+}
+
+func TestRunIgnoresSymlinks(t *testing.T) {
+	dir := t.TempDir()
+	outside := t.TempDir()
+	os.WriteFile(filepath.Join(outside, "precious"), []byte("x"), 0o644)
+	os.MkdirAll(filepath.Join(dir, "_work"), 0o755)
+	if err := os.Symlink(outside, filepath.Join(dir, "_work", "_temp")); err != nil {
+		t.Skip("symlinks not available")
+	}
+	if err := os.Symlink(outside, filepath.Join(dir, "_diag")); err != nil {
+		t.Skip("symlinks not available")
+	}
+	old := time.Now().Add(-90 * 24 * time.Hour)
+	os.Chtimes(filepath.Join(outside, "precious"), old, old)
+	if _, err := Run(dir, time.Hour, false, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "precious")); err != nil {
+		t.Fatal("a symlinked folder must never be followed")
+	}
+}
+
+func TestActiveCheckoutIsNotOld(t *testing.T) {
+	dir := t.TempDir()
+	repo := filepath.Join(dir, "_work", "repo")
+	os.MkdirAll(filepath.Join(repo, "repo", ".git"), 0o755)
+	old := time.Now().Add(-60 * 24 * time.Hour)
+	os.Chtimes(repo, old, old)
+	os.Chtimes(filepath.Join(repo, "repo"), old, old)
+	res, err := Run(dir, 14*24*time.Hour, true, time.Now())
+	if err != nil || len(res.Removed) != 0 {
+		t.Fatalf("a checkout with recent files inside must be kept: %+v %v", res, err)
 	}
 }

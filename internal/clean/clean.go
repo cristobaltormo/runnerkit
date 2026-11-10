@@ -30,12 +30,19 @@ func Run(runnerDir string, olderThan time.Duration, dryRun bool, now time.Time) 
 	}
 
 	work := filepath.Join(runnerDir, "_work")
-	entries, err := os.ReadDir(work)
-	if err != nil && !os.IsNotExist(err) {
-		return res, err
+	var entries []os.DirEntry
+	if realDir(work) {
+		var err error
+		entries, err = os.ReadDir(work)
+		if err != nil {
+			return res, err
+		}
 	}
 	for _, e := range entries {
 		path := filepath.Join(work, e.Name())
+		if !e.IsDir() {
+			continue
+		}
 		if e.Name() == "_temp" {
 			inner, _ := os.ReadDir(path)
 			for _, i := range inner {
@@ -45,10 +52,10 @@ func Run(runnerDir string, olderThan time.Duration, dryRun bool, now time.Time) 
 			}
 			continue
 		}
-		if keep[e.Name()] || !e.IsDir() {
+		if keep[e.Name()] {
 			continue
 		}
-		if info, err := e.Info(); err == nil && info.ModTime().Before(cutoff) {
+		if newestChange(path).Before(cutoff) {
 			if err := remove(path); err != nil {
 				return res, err
 			}
@@ -56,7 +63,10 @@ func Run(runnerDir string, olderThan time.Duration, dryRun bool, now time.Time) 
 	}
 
 	diag := filepath.Join(runnerDir, "_diag")
-	logs, _ := os.ReadDir(diag)
+	var logs []os.DirEntry
+	if realDir(diag) {
+		logs, _ = os.ReadDir(diag)
+	}
 	logCutoff := now.Add(-7 * 24 * time.Hour)
 	for _, e := range logs {
 		if e.IsDir() {
@@ -69,6 +79,51 @@ func Run(runnerDir string, olderThan time.Duration, dryRun bool, now time.Time) 
 		}
 	}
 	return res, nil
+}
+
+func realDir(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir()
+}
+
+func newestChange(dir string) time.Time {
+	now := time.Now()
+	var newest time.Time
+	note := func(path string) bool {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return false
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+		return true
+	}
+	if !note(dir) {
+		return now
+	}
+	children, err := os.ReadDir(dir)
+	if err != nil {
+		return now
+	}
+	for _, c := range children {
+		child := filepath.Join(dir, c.Name())
+		if !note(child) {
+			return now
+		}
+		if c.IsDir() {
+			grand, err := os.ReadDir(child)
+			if err != nil {
+				return now
+			}
+			for _, g := range grand {
+				if !note(filepath.Join(child, g.Name())) {
+					return now
+				}
+			}
+		}
+	}
+	return newest
 }
 
 func treeSize(path string) int64 {
