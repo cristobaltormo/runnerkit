@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -193,6 +194,17 @@ func parse(fs *flag.FlagSet, args []string) ([]string, error) {
 
 func (a *App) platform() (string, error) {
 	return dist.Platform(a.GOOS, a.GOARCH)
+}
+
+func (a *App) User() string {
+	if a.GOOS != "windows" {
+		return ""
+	}
+	u, err := user.Current()
+	if err != nil {
+		return ""
+	}
+	return u.Username
 }
 
 func (a *App) configScript() string {

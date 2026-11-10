@@ -9,7 +9,7 @@ import (
 
 func DataDir() (string, error) {
 	if v := os.Getenv("RUNNERKIT_HOME"); v != "" {
-		return v, nil
+		return filepath.Abs(filepath.Clean(v))
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {

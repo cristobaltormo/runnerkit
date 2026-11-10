@@ -4,10 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"os/user"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/cristobaltormo/runnerkit/internal/dist"
@@ -21,10 +23,14 @@ var nameClean = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 func defaultName(scope string) string {
 	host, _ := os.Hostname()
 	host, _, _ = strings.Cut(host, ".")
+	host = nameClean.ReplaceAllString(host, "-")
+	if len(host) > 20 {
+		host = host[:20]
+	}
 	name := nameClean.ReplaceAllString(host+"-"+strings.ReplaceAll(scope, "/", "-"), "-")
 	name = strings.Trim(name, "-._")
 	if len(name) > 63 {
-		name = name[:63]
+		name = strings.Trim(name[len(name)-63:], "-._")
 	}
 	return name
 }
@@ -38,6 +44,7 @@ func (a *App) cmdAdd(args []string) error {
 	noBattery := fs.Bool("no-pause-on-battery", false, "keep running on battery")
 	noStart := fs.Bool("no-start", false, "install but do not start")
 	group := fs.String("group", "", "runner group (organizations only)")
+	replace := fs.Bool("replace", false, "take over a runner of the same name already registered on GitHub")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -49,6 +56,11 @@ func (a *App) cmdAdd(args []string) error {
 	if err := ghapi.ValidScope(scope); err != nil {
 		return err
 	}
+	if *group != "" && ghapi.IsRepo(scope) {
+		return fmt.Errorf("--group only applies to organizations")
+	}
+	signal.Ignore(os.Interrupt, syscall.SIGTERM)
+	defer signal.Reset(os.Interrupt, syscall.SIGTERM)
 	if a.IsRoot() {
 		return fmt.Errorf("do not run this as root: the runner executes workflow code and should use a normal user account")
 	}
@@ -81,6 +93,18 @@ func (a *App) cmdAdd(args []string) error {
 		}
 	} else {
 		fmt.Fprintf(a.Out, "%s is an organization: make sure the runner group only serves private repositories.\n", scope)
+	}
+
+	if !*replace {
+		names, err := api.RunnerNames(scope, *name)
+		if err != nil {
+			return err
+		}
+		for _, n := range names {
+			if n == *name {
+				return fmt.Errorf("a runner called %s is already registered on GitHub for %s, probably on another machine; pick another name with --name or pass --replace to take it over", *name, scope)
+			}
+		}
 	}
 
 	rel, err := api.LatestRunner()
@@ -126,7 +150,10 @@ func (a *App) cmdAdd(args []string) error {
 		}
 	}
 	cfgArgs := []string{"--unattended", "--url", a.GitHub + "/" + scope,
-		"--name", *name, "--labels", strings.Join(allLabels, ","), "--work", "_work", "--replace"}
+		"--name", *name, "--labels", strings.Join(allLabels, ","), "--work", "_work"}
+	if *replace {
+		cfgArgs = append(cfgArgs, "--replace")
+	}
 	if *group != "" {
 		cfgArgs = append(cfgArgs, "--runnergroup", *group)
 	}
@@ -154,8 +181,9 @@ func (a *App) cmdAdd(args []string) error {
 	if err := a.store().Put(r); err != nil {
 		return registered(err)
 	}
-	if err := a.Service.Install(service.Spec{Name: *name, Exe: a.Exe, Home: a.DataDir}); err != nil {
+	if err := a.Service.Install(service.Spec{Name: *name, Exe: a.Exe, Home: a.DataDir, User: a.User()}); err != nil {
 		a.store().Delete(*name)
+		a.Service.Remove(*name)
 		return registered(fmt.Errorf("installing the service: %w", err))
 	}
 	if !*noStart {

@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/cristobaltormo/runnerkit/internal/service"
+	"github.com/cristobaltormo/runnerkit/internal/store"
 )
 
 type fakeProbe struct{ busy bool }
@@ -61,6 +62,9 @@ func newEnv(t *testing.T) *env {
 	mux.HandleFunc("GET /dl", func(w http.ResponseWriter, r *http.Request) { w.Write(buf.Bytes()) })
 	mux.HandleFunc("GET /repos/me/priv", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, `{"private":%v}`, e.private)
+	})
+	mux.HandleFunc("GET /repos/me/priv/actions/runners", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"runners":[{"name":"taken"}]}`)
 	})
 	mux.HandleFunc("POST /repos/me/priv/actions/runners/registration-token", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"token":"REGTOKEN"}`)) })
 	mux.HandleFunc("POST /repos/me/priv/actions/runners/remove-token", func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"token":"RMTOKEN"}`)) })
@@ -107,7 +111,7 @@ func TestAddListRemove(t *testing.T) {
 	if strings.TrimSpace(string(tokenFile)) != "REGTOKEN" {
 		t.Errorf("the token must reach config.sh through the environment, got %q", tokenFile)
 	}
-	for _, want := range []string{"--unattended", "--url https://github.example/me/priv", "--name box", "--labels runnerkit,gpu,fast", "--replace"} {
+	for _, want := range []string{"--unattended", "--url https://github.example/me/priv", "--name box", "--labels runnerkit,gpu,fast", "--work _work"} {
 		if !strings.Contains(string(args), want) {
 			t.Errorf("config.sh args lack %q: %s", want, args)
 		}
@@ -181,6 +185,23 @@ func TestAddRefusesRootAndCleansUpOnFailure(t *testing.T) {
 	}
 }
 
+func TestAddRefusesANameTakenOnGitHub(t *testing.T) {
+	e := newEnv(t)
+	if e.app.Run([]string{"add", "me/priv", "--name", "taken"}) == 0 || !strings.Contains(e.errBuf.String(), "already registered") {
+		t.Fatalf("a taken name must be refused: %s", e.errBuf)
+	}
+	if e.app.Run([]string{"add", "me/priv", "--name", "taken", "--replace", "--no-start"}) != 0 {
+		t.Fatalf("--replace must allow it: %s", e.errBuf)
+	}
+	args, _ := os.ReadFile(filepath.Join(e.app.DataDir, "runners", "taken", "config-args.txt"))
+	if !strings.Contains(string(args), "--replace") {
+		t.Errorf("--replace must reach config.sh: %s", args)
+	}
+	if e.app.Run([]string{"add", "me/priv", "--name", "x", "--group", "g"}) == 0 {
+		t.Error("--group on a repository must be refused")
+	}
+}
+
 func TestRemoveForceWithoutGitHub(t *testing.T) {
 	e := newEnv(t)
 	e.app.Run([]string{"add", "me/priv", "--name", "box", "--no-start"})
@@ -208,8 +229,12 @@ func TestUnknownCommandAndVersion(t *testing.T) {
 
 func TestDefaultName(t *testing.T) {
 	name := defaultName("My-Org/some.repo")
-	if strings.ContainsAny(name, "/ ") || !strings.HasSuffix(name, "My-Org-some.repo") {
+	if store.ValidName(name) != nil || !strings.HasSuffix(name, "My-Org-some.repo") {
 		t.Errorf("unexpected name %q", name)
+	}
+	long := defaultName("an-organization-with-a-long-name/and-a-very-long-repository-name-too")
+	if store.ValidName(long) != nil || len(long) > 63 {
+		t.Errorf("a long scope must still give a valid name: %q", long)
 	}
 }
 

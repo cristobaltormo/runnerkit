@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"regexp"
@@ -131,6 +132,22 @@ func (c *Client) token(scope, kind string) (string, error) {
 		return "", errors.New("GitHub returned an empty token")
 	}
 	return out.Token, nil
+}
+
+func (c *Client) RunnerNames(scope, name string) ([]string, error) {
+	var out struct {
+		Runners []struct {
+			Name string `json:"name"`
+		} `json:"runners"`
+	}
+	if err := c.request(http.MethodGet, runnersPath(scope)+"?per_page=100&name="+url.QueryEscape(name), &out); err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(out.Runners))
+	for _, r := range out.Runners {
+		names = append(names, r.Name)
+	}
+	return names, nil
 }
 
 func (c *Client) IsPrivate(repo string) (bool, error) {

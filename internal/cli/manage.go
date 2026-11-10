@@ -88,13 +88,17 @@ func (a *App) cmdControl(action string, args []string) error {
 	if action != "start" && !*force && a.Probe.Busy(r.Dir, 0) {
 		return fmt.Errorf("a job is running on %s; wait for it to finish or use --force", r.Name)
 	}
+	stop := a.Service.Stop
+	if *force {
+		stop = a.Service.StopNow
+	}
 	switch action {
 	case "start":
 		err = a.Service.Start(r.Name)
 	case "stop":
-		err = a.Service.Stop(r.Name)
+		err = stop(r.Name)
 	case "restart":
-		_ = a.Service.Stop(r.Name)
+		_ = stop(r.Name)
 		a.waitStopped(r.Name)
 		err = a.Service.Start(r.Name)
 	}
@@ -182,7 +186,7 @@ func (a *App) cmdClean(args []string) error {
 func (a *App) cmdRemove(args []string) error {
 	fs := a.flags("remove")
 	token := fs.String("token", "", "GitHub token")
-	force := fs.Bool("force", false, "delete locally even if GitHub cannot be reached")
+	force := fs.Bool("force", false, "delete even if a job is running or GitHub cannot be reached")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -194,7 +198,10 @@ func (a *App) cmdRemove(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.Service.Stop(r.Name); err != nil {
+	if !*force && a.Probe.Busy(r.Dir, 0) {
+		return fmt.Errorf("a job is running on %s; wait for it to finish or use --force", r.Name)
+	}
+	if err := a.Service.StopNow(r.Name); err != nil {
 		fmt.Fprintf(a.Err, "note: could not stop %s: %v\n", r.Name, err)
 	}
 	remote := func() error {
@@ -257,6 +264,10 @@ func (a *App) cmdSupervise(args []string) error {
 		return err
 	}
 	defer logFile.Close()
+	supervise.HideConsole()
+	if err := supervise.TieChildrenToSupervisor(); err != nil {
+		fmt.Fprintf(logFile, "%s supervisor: the runner will outlive the supervisor if it is killed: %v\n", time.Now().Format(time.RFC3339), err)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	return supervise.Run(ctx, supervise.Config{
