@@ -59,24 +59,24 @@ func ExpectedSum(rel ghapi.Release, asset ghapi.Asset, platform string) (string,
 	return "", errors.New("the release publishes no checksum for this download, refusing to install it unverified")
 }
 
-func Fetch(httpc *http.Client, asset ghapi.Asset, sum, cacheDir string) (string, error) {
+func Fetch(httpc *http.Client, name, url, sum, cacheDir string) (string, error) {
 	if httpc == nil {
 		httpc = http.DefaultClient
 	}
 	if err := os.MkdirAll(cacheDir, 0o700); err != nil {
 		return "", err
 	}
-	dest := filepath.Join(cacheDir, asset.Name)
+	dest := filepath.Join(cacheDir, name)
 	if got, err := fileSum(dest); err == nil && got == sum {
 		return dest, nil
 	}
-	resp, err := httpc.Get(asset.URL)
+	resp, err := httpc.Get(url)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("downloading %s: HTTP %d", asset.Name, resp.StatusCode)
+		return "", fmt.Errorf("downloading %s: HTTP %d", name, resp.StatusCode)
 	}
 	tmp := dest + ".part"
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
@@ -94,7 +94,7 @@ func Fetch(httpc *http.Client, asset ghapi.Asset, sum, cacheDir string) (string,
 	}
 	if got := hex.EncodeToString(h.Sum(nil)); got != sum {
 		os.Remove(tmp)
-		return "", fmt.Errorf("checksum mismatch for %s: expected %s, got %s", asset.Name, sum, got)
+		return "", fmt.Errorf("checksum mismatch for %s: expected %s, got %s", name, sum, got)
 	}
 	return dest, os.Rename(tmp, dest)
 }

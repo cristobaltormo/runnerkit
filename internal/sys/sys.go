@@ -10,9 +10,16 @@ import (
 	"syscall"
 )
 
+type Style int
+
+const (
+	ByWorker Style = iota
+	ByChildren
+)
+
 type Probe interface {
 	OnBattery() bool
-	Busy(dir string, rootPID int) bool
+	Busy(dir string, rootPID int, style Style) bool
 	Terminate(pid int) error
 	Kill(pid int) error
 }
@@ -65,7 +72,10 @@ func linuxOnBattery(dir string) bool {
 	return onBattery
 }
 
-func (Host) Busy(dir string, rootPID int) bool {
+func (Host) Busy(dir string, rootPID int, style Style) bool {
+	if style == ByChildren {
+		return childrenBusy(dir, rootPID)
+	}
 	if runtime.GOOS == "windows" {
 		out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
 			`Get-CimInstance Win32_Process -Filter "Name='Runner.Worker.exe'" | ForEach-Object { $_.ExecutablePath }`).Output()
@@ -86,6 +96,78 @@ func WorkerInDir(psArgs, dir string) bool {
 	needle := strings.TrimRight(dir, "/") + "/bin/Runner.Worker"
 	for _, line := range strings.Split(psArgs, "\n") {
 		if strings.HasPrefix(strings.TrimSpace(line), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func childrenBusy(dir string, rootPID int) bool {
+	if runtime.GOOS == "windows" {
+		out, err := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command",
+			`Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId)|$($_.ParentProcessId)|$($_.ExecutablePath)" }`).Output()
+		return err == nil && WindowsChildrenBusy(string(out), dir, rootPID)
+	}
+	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,args=").Output()
+	return err == nil && ChildrenBusy(string(out), dir, rootPID)
+}
+
+func ChildrenBusy(ps, dir string, rootPID int) bool {
+	prefix := strings.TrimRight(dir, "/") + "/"
+	parents := map[int]bool{}
+	if rootPID > 0 {
+		parents[rootPID] = true
+	}
+	type proc struct{ pid, ppid int }
+	var all []proc
+	for _, line := range strings.Split(ps, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(fields[0])
+		ppid, err2 := strconv.Atoi(fields[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		all = append(all, proc{pid, ppid})
+		if rootPID <= 0 && strings.HasPrefix(strings.Join(fields[2:], " "), prefix) {
+			parents[pid] = true
+		}
+	}
+	for _, p := range all {
+		if parents[p.ppid] {
+			return true
+		}
+	}
+	return false
+}
+
+func WindowsChildrenBusy(out, dir string, rootPID int) bool {
+	prefix := strings.ToLower(strings.TrimRight(dir, `\/`)) + `\`
+	parents := map[int]bool{}
+	if rootPID > 0 {
+		parents[rootPID] = true
+	}
+	type proc struct{ pid, ppid int }
+	var all []proc
+	for _, line := range strings.Split(out, "\n") {
+		parts := strings.SplitN(strings.TrimSpace(line), "|", 3)
+		if len(parts) < 3 {
+			continue
+		}
+		pid, err1 := strconv.Atoi(parts[0])
+		ppid, err2 := strconv.Atoi(parts[1])
+		if err1 != nil || err2 != nil {
+			continue
+		}
+		all = append(all, proc{pid, ppid})
+		if rootPID <= 0 && strings.HasPrefix(strings.ToLower(parts[2]), prefix) {
+			parents[pid] = true
+		}
+	}
+	for _, p := range all {
+		if parents[p.ppid] {
 			return true
 		}
 	}

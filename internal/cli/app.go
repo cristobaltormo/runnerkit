@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/cristobaltormo/runnerkit/internal/dist"
-	"github.com/cristobaltormo/runnerkit/internal/ghapi"
+	"github.com/cristobaltormo/runnerkit/internal/forge"
 	"github.com/cristobaltormo/runnerkit/internal/paths"
 	"github.com/cristobaltormo/runnerkit/internal/service"
 	"github.com/cristobaltormo/runnerkit/internal/store"
@@ -35,7 +35,8 @@ type App struct {
 	GOOS     string
 	GOARCH   string
 	IsRoot   func() bool
-	Token    func(flag string) (string, error)
+	Token    func(kind forge.Kind, flag string) (string, error)
+	Mirrors  forge.Mirrors
 	Exec     func(dir string, env []string, name string, args ...string) error
 }
 
@@ -66,7 +67,7 @@ func newApp(version string) (*App, error) {
 	}
 	api := os.Getenv("RUNNERKIT_API_URL")
 	if api == "" {
-		api = ghapi.DefaultAPI
+		api = "https://api.github.com"
 	}
 	gh := os.Getenv("RUNNERKIT_GITHUB_URL")
 	if gh == "" {
@@ -86,7 +87,7 @@ func newApp(version string) (*App, error) {
 		GOOS:    runtime.GOOS,
 		GOARCH:  runtime.GOARCH,
 		IsRoot:  func() bool { return runtime.GOOS != "windows" && os.Geteuid() == 0 },
-		Token:   ghapi.ResolveToken,
+		Token:   forge.ResolveToken,
 		Exec:    runCommand,
 	}, nil
 }
@@ -106,10 +107,10 @@ func runCommand(dir string, env []string, name string, args ...string) error {
 	return nil
 }
 
-const usage = `runnerkit sets up GitHub Actions self-hosted runners on this machine.
+const usage = `runnerkit sets up self-hosted CI runners for GitHub, Forgejo, Gitea and GitLab on this machine.
 
 Usage:
-  runnerkit add <owner/repo | organization> [flags]   install a runner and start it
+  runnerkit add <owner/repo | https://server/owner/repo>   install a runner and start it
   runnerkit list                                      list the runners on this machine
   runnerkit status [name]                             show the state of one or all runners
   runnerkit start|stop|restart <name>                 control a runner
@@ -168,10 +169,6 @@ func (a *App) Run(args []string) int {
 
 func (a *App) store() *store.Store { return store.Open(a.DataDir) }
 
-func (a *App) client(token string) *ghapi.Client {
-	return &ghapi.Client{API: a.API, Token: token, HTTP: a.HTTP}
-}
-
 func (a *App) flags(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet("runnerkit "+name, flag.ContinueOnError)
 	fs.SetOutput(a.Err)
@@ -205,13 +202,6 @@ func (a *App) User() string {
 		return ""
 	}
 	return u.Username
-}
-
-func (a *App) configScript() string {
-	if a.GOOS == "windows" {
-		return "config.cmd"
-	}
-	return "config.sh"
 }
 
 func (a *App) logPath(name string) string {

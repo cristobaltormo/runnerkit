@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
 
 	"github.com/cristobaltormo/runnerkit/internal/clean"
+	"github.com/cristobaltormo/runnerkit/internal/forge"
 	"github.com/cristobaltormo/runnerkit/internal/store"
 	"github.com/cristobaltormo/runnerkit/internal/supervise"
+	"github.com/cristobaltormo/runnerkit/internal/sys"
 )
 
 func (a *App) cmdList(args []string) error {
@@ -27,9 +28,9 @@ func (a *App) cmdList(args []string) error {
 		return nil
 	}
 	tw := tabwriter.NewWriter(a.Out, 0, 4, 2, ' ', 0)
-	fmt.Fprintln(tw, "NAME\tSCOPE\tSTATE\tLABELS")
+	fmt.Fprintln(tw, "NAME\tFORGE\tSCOPE\tSTATE\tLABELS")
 	for _, r := range runners {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", r.Name, r.Scope, a.Service.Status(r.Name), strings.Join(r.Labels, ","))
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n", r.Name, kindOf(r), r.Scope, a.Service.Status(r.Name), strings.Join(r.Labels, ","))
 	}
 	return tw.Flush()
 }
@@ -55,13 +56,27 @@ func (a *App) cmdStatus(args []string) error {
 			continue
 		}
 		shown++
-		fmt.Fprintf(a.Out, "%s\n  scope    %s\n  state    %s\n  runner   %s\n  folder   %s\n  battery  %s\n  log      %s\n",
-			r.Name, r.Scope, a.Service.Status(r.Name), r.Version, r.Dir, batteryPolicy(r), a.logPath(r.Name))
+		fmt.Fprintf(a.Out, "%s\n  forge    %s\n  scope    %s\n  state    %s\n  runner   %s\n  folder   %s\n  battery  %s\n  log      %s\n",
+			r.Name, kindOf(r), r.Scope, a.Service.Status(r.Name), r.Version, r.Dir, batteryPolicy(r), a.logPath(r.Name))
 	}
 	if shown == 0 {
 		fmt.Fprintln(a.Out, "No runners on this machine.")
 	}
 	return nil
+}
+
+func kindOf(r store.Runner) forge.Kind {
+	if r.Forge == "" {
+		return forge.GitHub
+	}
+	return forge.Kind(r.Forge)
+}
+
+func styleOf(r store.Runner) sys.Style {
+	if kindOf(r) == forge.GitHub {
+		return sys.ByWorker
+	}
+	return sys.ByChildren
 }
 
 func batteryPolicy(r store.Runner) string {
@@ -85,7 +100,7 @@ func (a *App) cmdControl(action string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if action != "start" && !*force && a.Probe.Busy(r.Dir, 0) {
+	if action != "start" && !*force && a.Probe.Busy(r.Dir, 0, styleOf(r)) {
 		return fmt.Errorf("a job is running on %s; wait for it to finish or use --force", r.Name)
 	}
 	stop := a.Service.Stop
@@ -165,7 +180,7 @@ func (a *App) cmdClean(args []string) error {
 		if len(pos) > 0 && pos[0] != r.Name {
 			continue
 		}
-		if a.Probe.Busy(r.Dir, 0) {
+		if a.Probe.Busy(r.Dir, 0, styleOf(r)) {
 			fmt.Fprintf(a.Out, "%s: a job is running, skipped\n", r.Name)
 			continue
 		}
@@ -186,7 +201,7 @@ func (a *App) cmdClean(args []string) error {
 func (a *App) cmdRemove(args []string) error {
 	fs := a.flags("remove")
 	token := fs.String("token", "", "GitHub token")
-	force := fs.Bool("force", false, "delete even if a job is running or GitHub cannot be reached")
+	force := fs.Bool("force", false, "delete even if a job is running or the server cannot be reached")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -198,31 +213,28 @@ func (a *App) cmdRemove(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !*force && a.Probe.Busy(r.Dir, 0) {
+	if !*force && a.Probe.Busy(r.Dir, 0, styleOf(r)) {
 		return fmt.Errorf("a job is running on %s; wait for it to finish or use --force", r.Name)
 	}
 	if err := a.Service.StopNow(r.Name); err != nil {
 		fmt.Fprintf(a.Err, "note: could not stop %s: %v\n", r.Name, err)
 	}
 	remote := func() error {
-		tok, err := a.Token(*token)
+		tok, err := a.Token(kindOf(r), *token)
 		if err != nil {
 			return err
 		}
-		rm, err := a.client(tok).RemovalToken(r.Scope)
+		p, err := a.provider(kindOf(r), r.URL, tok)
 		if err != nil {
 			return err
 		}
-		if err := a.Exec(r.Dir, []string{"ACTIONS_RUNNER_INPUT_TOKEN=" + rm}, filepath.Join(r.Dir, a.configScript()), "remove"); err != nil {
-			return redact(err, rm)
-		}
-		return nil
+		return p.Deregister(forge.Record{Dir: r.Dir, Scope: r.Scope, Name: r.Name, RunnerID: r.RunnerID, GOOS: a.GOOS, Exec: forge.Exec(a.Exec)})
 	}
 	if err := remote(); err != nil {
 		if !*force {
-			return fmt.Errorf("could not unregister the runner from GitHub: %w\nRun again with --force to delete it locally anyway and remove it by hand in the repository settings", err)
+			return fmt.Errorf("could not unregister the runner from the server: %w\nRun again with --force to delete it locally anyway and remove it by hand in the repository settings", err)
 		}
-		fmt.Fprintf(a.Err, "warning: not unregistered from GitHub (%v). Delete %s in the %s settings.\n", err, r.Name, r.Scope)
+		fmt.Fprintf(a.Err, "warning: not unregistered from the server (%v). Delete %s in the settings of %s.\n", err, r.Name, r.Scope)
 	}
 	if err := a.Service.Remove(r.Name); err != nil {
 		fmt.Fprintf(a.Err, "warning: removing the service: %v\n", err)
@@ -275,5 +287,7 @@ func (a *App) cmdSupervise(args []string) error {
 		Dir:            r.Dir,
 		PauseOnBattery: r.PauseOnBattery,
 		Probe:          a.Probe,
+		Style:          styleOf(r),
+		Command:        supervise.Command(kindOf(r)),
 	}, logFile)
 }

@@ -3,9 +3,9 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
-	"os/user"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/cristobaltormo/runnerkit/internal/dist"
-	"github.com/cristobaltormo/runnerkit/internal/ghapi"
+	"github.com/cristobaltormo/runnerkit/internal/forge"
 	"github.com/cristobaltormo/runnerkit/internal/service"
 	"github.com/cristobaltormo/runnerkit/internal/store"
 )
@@ -35,32 +35,133 @@ func defaultName(scope string) string {
 	return name
 }
 
+func (a *App) provider(kind forge.Kind, baseURL, token string) (forge.Provider, error) {
+	cfg := forge.Config{Kind: kind, BaseURL: baseURL, Token: token, HTTP: a.HTTP, Mirror: a.Mirrors}
+	if kind == forge.GitHub {
+		cfg.API = a.API
+		cfg.BaseURL = a.GitHub
+	}
+	return forge.New(cfg)
+}
+
+func (a *App) resolveTarget(raw, forced string) (forge.Kind, string, string, error) {
+	target, isURL, err := forge.ParseTarget(raw)
+	if err != nil {
+		return "", "", "", err
+	}
+	kind := target.Kind
+	if forced != "" {
+		kind, err = forge.ParseKind(forced)
+		if err != nil {
+			return "", "", "", err
+		}
+	}
+	if !isURL {
+		if kind != "" && kind != forge.GitHub {
+			return "", "", "", fmt.Errorf("give the address of the server, for example https://git.example.com/%s", target.Scope)
+		}
+		return forge.GitHub, a.GitHub, target.Scope, nil
+	}
+	if kind == "" {
+		kind, err = forge.Detect(a.HTTP, target.BaseURL)
+		if err != nil {
+			return "", "", "", err
+		}
+	}
+	if kind == forge.GitHub {
+		return kind, a.GitHub, target.Scope, nil
+	}
+	return kind, target.BaseURL, target.Scope, nil
+}
+
+func (a *App) installRunner(p forge.Provider, kind forge.Kind, dir, binary string) (string, error) {
+	if binary != "" {
+		return "local file", copyBinary(binary, filepath.Join(dir, forge.BinaryName(kind, a.GOOS)))
+	}
+	dl, err := p.Download(a.GOOS, a.GOARCH)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(a.Out, "Downloading the %s runner %s for %s/%s\n", kind, dl.Version, a.GOOS, a.GOARCH)
+	file, err := dist.Fetch(a.HTTP, dl.Name, dl.URL, dl.SHA256, filepath.Join(a.DataDir, "cache"))
+	if err != nil {
+		return "", err
+	}
+	if dl.Archive {
+		return dl.Version, dist.Extract(file, dir)
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dl.Version, copyBinary(file, filepath.Join(dir, forge.BinaryName(kind, a.GOOS)))
+}
+
+func copyBinary(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
 func (a *App) cmdAdd(args []string) error {
 	fs := a.flags("add")
 	name := fs.String("name", "", "runner name (default: <hostname>-<scope>)")
 	labels := fs.String("labels", "", "extra labels, comma separated")
-	token := fs.String("token", "", "GitHub token (default: RUNNERKIT_TOKEN, GH_TOKEN, GITHUB_TOKEN, then the gh CLI)")
+	token := fs.String("token", "", "access token (default: RUNNERKIT_TOKEN, then the variable of the forge, then the gh CLI for GitHub)")
+	forced := fs.String("forge", "", "github, forgejo, gitea or gitlab (default: detected from the address)")
+	binary := fs.String("runner-binary", "", "use this runner program instead of downloading one (not for GitHub)")
 	allowPublic := fs.Bool("allow-public", false, "allow a public repository (see docs/security.md)")
 	noBattery := fs.Bool("no-pause-on-battery", false, "keep running on battery")
 	noStart := fs.Bool("no-start", false, "install but do not start")
-	group := fs.String("group", "", "runner group (organizations only)")
+	group := fs.String("group", "", "runner group (GitHub organizations only)")
 	replace := fs.Bool("replace", false, "take over a runner of the same name already registered on GitHub")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
 	}
 	if len(pos) != 1 {
-		return fmt.Errorf("usage: runnerkit add <owner/repo | organization> [flags]")
+		return fmt.Errorf("usage: runnerkit add <owner/repo | organization | https://server/owner/repo> [flags]")
 	}
-	scope := pos[0]
-	if err := ghapi.ValidScope(scope); err != nil {
+	kind, baseURL, scope, err := a.resolveTarget(pos[0], *forced)
+	if err != nil {
 		return err
-	}
-	if *group != "" && ghapi.IsRepo(scope) {
-		return fmt.Errorf("--group only applies to organizations")
 	}
 	signal.Ignore(os.Interrupt, syscall.SIGTERM)
 	defer signal.Reset(os.Interrupt, syscall.SIGTERM)
+	tok, err := a.Token(kind, *token)
+	if err != nil {
+		if kind == forge.Gogs {
+			_, perr := forge.New(forge.Config{Kind: kind})
+			return perr
+		}
+		return err
+	}
+	p, err := a.provider(kind, baseURL, tok)
+	if err != nil {
+		return err
+	}
+	if err := p.CheckScope(scope); err != nil {
+		return err
+	}
+	if *group != "" && (kind != forge.GitHub || strings.Contains(scope, "/")) {
+		return fmt.Errorf("--group only applies to GitHub organizations")
+	}
+	if *binary != "" && kind == forge.GitHub {
+		return fmt.Errorf("--runner-binary is not available for GitHub, the official runner is always downloaded")
+	}
 	if a.IsRoot() {
 		return fmt.Errorf("do not run this as root: the runner executes workflow code and should use a normal user account")
 	}
@@ -73,109 +174,74 @@ func (a *App) cmdAdd(args []string) error {
 	if _, err := a.store().Get(*name); err == nil {
 		return fmt.Errorf("a runner called %s already exists here, pick another name with --name", *name)
 	}
-	platform, err := a.platform()
-	if err != nil {
-		return err
-	}
-	tok, err := a.Token(*token)
-	if err != nil {
-		return err
-	}
-	api := a.client(tok)
 
-	if ghapi.IsRepo(scope) {
-		private, err := api.IsPrivate(scope)
-		if err != nil {
-			return err
-		}
-		if !private && !*allowPublic {
-			return fmt.Errorf("%s is a public repository. A pull request from a fork could run its own code on this machine. Use GitHub-hosted runners for public repositories, or pass --allow-public if you understand the risk", scope)
-		}
-	} else {
+	private, err := p.IsPrivate(scope)
+	if err != nil {
+		return err
+	}
+	if !private && !*allowPublic {
+		return fmt.Errorf("%s is a public repository. A pull request from a fork could run its own code on this machine. Use hosted runners for public repositories, or pass --allow-public if you understand the risk", scope)
+	}
+	if kind == forge.GitHub && !strings.Contains(scope, "/") {
 		fmt.Fprintf(a.Out, "%s is an organization: make sure the runner group only serves private repositories.\n", scope)
 	}
-
 	if !*replace {
-		names, err := api.RunnerNames(scope, *name)
+		taken, err := p.NameTaken(scope, *name)
 		if err != nil {
 			return err
 		}
-		for _, n := range names {
-			if n == *name {
-				return fmt.Errorf("a runner called %s is already registered on GitHub for %s, probably on another machine; pick another name with --name or pass --replace to take it over", *name, scope)
-			}
+		if taken {
+			return fmt.Errorf("a runner called %s is already registered for %s, probably on another machine; pick another name with --name or pass --replace to take it over", *name, scope)
 		}
-	}
-
-	rel, err := api.LatestRunner()
-	if err != nil {
-		return err
-	}
-	asset, err := dist.AssetFor(rel, platform)
-	if err != nil {
-		return err
-	}
-	sum, err := dist.ExpectedSum(rel, asset, platform)
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(a.Out, "Downloading the GitHub runner %s for %s\n", rel.Version, platform)
-	archive, err := dist.Fetch(a.HTTP, asset, sum, filepath.Join(a.DataDir, "cache"))
-	if err != nil {
-		return err
 	}
 
 	dir := filepath.Join(a.DataDir, "runners", *name)
 	if _, err := os.Stat(dir); err == nil {
 		return fmt.Errorf("%s already exists, remove it or pick another name", dir)
 	}
-	if err := dist.Extract(archive, dir); err != nil {
-		os.RemoveAll(dir)
-		return err
-	}
-
 	cleanup := func(cause error) error {
 		os.RemoveAll(dir)
 		return cause
 	}
-
-	reg, err := api.RegistrationToken(scope)
+	version, err := a.installRunner(p, kind, dir, *binary)
 	if err != nil {
+		if errors.Is(err, forge.ErrNoRunnerBinary) {
+			return cleanup(fmt.Errorf("%w\nYou can build or download a runner yourself and pass it with --runner-binary", err))
+		}
 		return cleanup(err)
 	}
-	allLabels := []string{"runnerkit"}
+	if kind == forge.GitLab {
+		os.MkdirAll(filepath.Join(dir, "builds"), 0o755)
+	}
+
+	extra := []string{}
 	for _, l := range strings.Split(*labels, ",") {
 		if l = strings.TrimSpace(l); l != "" {
-			allLabels = append(allLabels, l)
+			extra = append(extra, l)
 		}
 	}
-	cfgArgs := []string{"--unattended", "--url", a.GitHub + "/" + scope,
-		"--name", *name, "--labels", strings.Join(allLabels, ","), "--work", "_work"}
-	if *replace {
-		cfgArgs = append(cfgArgs, "--replace")
-	}
-	if *group != "" {
-		cfgArgs = append(cfgArgs, "--runnergroup", *group)
-	}
-	script := filepath.Join(dir, a.configScript())
+	allLabels := forge.RunnerLabels(kind, a.GOOS, a.GOARCH, extra)
 	fmt.Fprintln(a.Out, "Registering the runner")
-	if err := a.Exec(dir, []string{"ACTIONS_RUNNER_INPUT_TOKEN=" + reg}, script, cfgArgs...); err != nil {
-		return cleanup(fmt.Errorf("registering the runner: %w", redact(err, reg)))
+	reg, err := p.Register(forge.Registration{Dir: dir, Scope: scope, Name: *name, Labels: allLabels, Group: *group,
+		Replace: *replace, GOOS: a.GOOS, Exec: forge.Exec(a.Exec)})
+	if err != nil {
+		return cleanup(fmt.Errorf("registering the runner: %w", err))
 	}
 	registered := func(cause error) error {
-		if rm, err := api.RemovalToken(scope); err == nil {
-			_ = a.Exec(dir, []string{"ACTIONS_RUNNER_INPUT_TOKEN=" + rm}, script, "remove")
-		}
+		_ = p.Deregister(forge.Record{Dir: dir, Scope: scope, Name: *name, RunnerID: reg.RunnerID, GOOS: a.GOOS, Exec: forge.Exec(a.Exec)})
 		return cleanup(cause)
 	}
 
 	r := store.Runner{
 		Name:           *name,
+		Forge:          string(kind),
+		URL:            baseURL,
+		RunnerID:       reg.RunnerID,
 		Scope:          scope,
 		Labels:         allLabels,
 		Dir:            dir,
 		PauseOnBattery: !*noBattery,
-		Version:        rel.Version,
+		Version:        version,
 		Created:        time.Now().UTC(),
 	}
 	if err := a.store().Put(r); err != nil {
@@ -192,23 +258,27 @@ func (a *App) cmdAdd(args []string) error {
 		}
 	}
 
-	osLabel, arch := dist.WorkflowLabels(a.GOOS, a.GOARCH)
 	fmt.Fprintf(a.Out, "\nRunner %s is installed", *name)
 	if !*noStart {
 		fmt.Fprint(a.Out, " and running")
 	}
-	fmt.Fprintf(a.Out, ".\nTo use it, put this in your workflow:\n\n  runs-on: [self-hosted, %s, %s, runnerkit]\n\n", osLabel, arch)
-	if a.GOOS == "linux" {
-		if u, err := user.Current(); err == nil {
-			fmt.Fprintf(a.Out, "To keep it running when you are logged out, run once: loginctl enable-linger %s\n", u.Username)
-		}
+	fmt.Fprintf(a.Out, ".\nTo use it, put this in your workflow:\n\n  %s\n\n", forge.Snippet(kind, a.GOOS, a.GOARCH))
+	if kind != forge.GitHub {
+		fmt.Fprintln(a.Out, "Jobs run directly on this machine, without a container.")
+	}
+	if kind == forge.GitLab && a.GOOS != "windows" {
+		a.warnAboutBashLogout()
 	}
 	return nil
 }
 
-func redact(err error, secret string) error {
-	if secret == "" {
-		return err
+func (a *App) warnAboutBashLogout() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
 	}
-	return errors.New(strings.ReplaceAll(err.Error(), secret, "***"))
+	data, err := os.ReadFile(filepath.Join(home, ".bash_logout"))
+	if err == nil && strings.Contains(string(data), "clear_console") {
+		fmt.Fprintf(a.Out, "Warning: %s clears the console, which makes GitLab shell jobs fail with\n\"prepare environment: exit status 1\". Delete that file or remove its last lines.\n", filepath.Join(home, ".bash_logout"))
+	}
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cristobaltormo/runnerkit/internal/clean"
+	"github.com/cristobaltormo/runnerkit/internal/forge"
 	"github.com/cristobaltormo/runnerkit/internal/sys"
 )
 
@@ -23,25 +24,21 @@ type Config struct {
 	Dir            string
 	PauseOnBattery bool
 	Probe          sys.Probe
+	Style          sys.Style
 	Poll           time.Duration
 	Drain          time.Duration
 	CleanAfter     time.Duration
 	Command        func(dir string) *exec.Cmd
 }
 
-var secretVars = []string{"GH_TOKEN", "GITHUB_TOKEN", "RUNNERKIT_TOKEN"}
-
-func DefaultCommand(dir string) *exec.Cmd {
-	script := "run.sh"
-	if runtime.GOOS == "windows" {
-		script = "run.cmd"
+func Command(kind forge.Kind) func(dir string) *exec.Cmd {
+	return func(dir string) *exec.Cmd {
+		cmd := forge.Daemon(kind, dir, runtime.GOOS)
+		cmd.Env = append(withoutSecrets(os.Environ()), "RUNNER_MANUALLY_TRAP_SIG=1")
+		cmd.WaitDelay = 5 * time.Second
+		sys.Detach(cmd)
+		return cmd
 	}
-	cmd := exec.Command(filepath.Join(dir, script))
-	cmd.Dir = dir
-	cmd.Env = append(withoutSecrets(os.Environ()), "RUNNER_MANUALLY_TRAP_SIG=1")
-	cmd.WaitDelay = 5 * time.Second
-	sys.Detach(cmd)
-	return cmd
 }
 
 func withoutSecrets(env []string) []string {
@@ -49,7 +46,7 @@ func withoutSecrets(env []string) []string {
 	for _, kv := range env {
 		name, _, _ := strings.Cut(kv, "=")
 		drop := false
-		for _, secret := range secretVars {
+		for _, secret := range forge.SecretVariables() {
 			if strings.EqualFold(name, secret) {
 				drop = true
 			}
@@ -157,7 +154,7 @@ func Run(ctx context.Context, cfg Config, log io.Writer) error {
 		cfg.CleanAfter = 14 * 24 * time.Hour
 	}
 	if cfg.Command == nil {
-		cfg.Command = DefaultCommand
+		cfg.Command = Command(forge.GitHub)
 	}
 	logf := func(format string, a ...any) {
 		fmt.Fprintf(log, "%s supervisor: %s\n", time.Now().Format(time.RFC3339), fmt.Sprintf(format, a...))
@@ -201,7 +198,7 @@ func Run(ctx context.Context, cfg Config, log io.Writer) error {
 				logf("runner exited: %v", err)
 				break watch
 			case <-ticker.C:
-				if cfg.PauseOnBattery && cfg.Probe.OnBattery() && !cfg.Probe.Busy(cfg.Dir, cmd.Process.Pid) {
+				if cfg.PauseOnBattery && cfg.Probe.OnBattery() && !cfg.Probe.Busy(cfg.Dir, cmd.Process.Pid, cfg.Style) {
 					logf("on battery and idle, stopping the runner")
 					stopChild(cmd, exited, cfg.Probe, grace)
 					pausedForBattery = true
@@ -209,7 +206,7 @@ func Run(ctx context.Context, cfg Config, log io.Writer) error {
 				}
 			case <-ctx.Done():
 				deadline := time.Now().Add(cfg.Drain)
-				for cfg.Probe.Busy(cfg.Dir, cmd.Process.Pid) && time.Now().Before(deadline) {
+				for cfg.Probe.Busy(cfg.Dir, cmd.Process.Pid, cfg.Style) && time.Now().Before(deadline) {
 					select {
 					case <-exited:
 						ticker.Stop()

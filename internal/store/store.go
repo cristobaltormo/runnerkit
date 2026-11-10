@@ -17,6 +17,9 @@ var ErrNotFound = errors.New("runner not found")
 
 type Runner struct {
 	Name           string    `json:"name"`
+	Forge          string    `json:"forge,omitempty"`
+	URL            string    `json:"url,omitempty"`
+	RunnerID       string    `json:"runner_id,omitempty"`
 	Scope          string    `json:"scope"`
 	Labels         []string  `json:"labels"`
 	Dir            string    `json:"dir"`

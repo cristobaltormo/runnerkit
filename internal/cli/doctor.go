@@ -6,6 +6,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/cristobaltormo/runnerkit/internal/forge"
 )
 
 func (a *App) cmdDoctor(args []string) error {
@@ -35,15 +37,19 @@ func (a *App) cmdDoctor(args []string) error {
 	_, err = exec.LookPath("git")
 	check("git is installed", err, "workflows that use actions/checkout need git on the PATH")
 
-	_, err = a.Token("")
-	check("GitHub token available", err, "run `gh auth login`, or set GH_TOKEN with administration write access to the repository")
+	_, err = a.Token(forge.GitHub, "")
+	if err != nil {
+		fmt.Fprintf(a.Out, "note  no GitHub token found (%v); only needed for GitHub\n", err)
+	} else {
+		fmt.Fprintln(a.Out, "ok    GitHub token available")
+	}
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Get(a.API + "/zen")
 	if err == nil {
 		resp.Body.Close()
 	}
-	check("GitHub API reachable", err, "check the network, proxy or firewall")
+	check("GitHub API reachable", err, "check the network, proxy or firewall (only needed for GitHub)")
 
 	check("data folder writable", writable(a.DataDir), "set RUNNERKIT_HOME to a folder you can write to")
 

@@ -97,3 +97,27 @@ func TestWorkerInDir(t *testing.T) {
 		t.Error("worker of another runner must not count")
 	}
 }
+
+func TestChildrenBusy(t *testing.T) {
+	ps := ` 10     1 /usr/bin/sshd
+ 200   100 /home/me/rk/runners/a/forgejo-runner daemon
+ 300   200 /bin/bash -e /tmp/step.sh
+ 400     1 /home/me/rk/runners/b/forgejo-runner daemon
+`
+	if !ChildrenBusy(ps, "/home/me/rk/runners/a", 0) {
+		t.Error("runner a has a child running")
+	}
+	if ChildrenBusy(ps, "/home/me/rk/runners/b", 0) {
+		t.Error("runner b is idle")
+	}
+	if !ChildrenBusy(ps, "", 200) || ChildrenBusy(ps, "", 300) {
+		t.Error("by pid")
+	}
+}
+
+func TestWindowsChildrenBusy(t *testing.T) {
+	out := "20|4|C:\\rk\\runners\\a\\forgejo-runner.exe\r\n30|20|C:\\Windows\\System32\\cmd.exe\r\n40|4|C:\\rk\\runners\\b\\forgejo-runner.exe\r\n"
+	if !WindowsChildrenBusy(out, `C:\rk\runners\a`, 0) || WindowsChildrenBusy(out, `C:\rk\runners\b`, 0) {
+		t.Error("per runner folder")
+	}
+}

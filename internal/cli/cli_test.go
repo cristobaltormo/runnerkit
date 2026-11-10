@@ -17,16 +17,18 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/cristobaltormo/runnerkit/internal/forge"
 	"github.com/cristobaltormo/runnerkit/internal/service"
 	"github.com/cristobaltormo/runnerkit/internal/store"
+	"github.com/cristobaltormo/runnerkit/internal/sys"
 )
 
 type fakeProbe struct{ busy bool }
 
-func (fakeProbe) OnBattery() bool         { return false }
-func (f fakeProbe) Busy(string, int) bool { return f.busy }
-func (fakeProbe) Terminate(int) error     { return nil }
-func (fakeProbe) Kill(int) error          { return nil }
+func (fakeProbe) OnBattery() bool                    { return false }
+func (f fakeProbe) Busy(string, int, sys.Style) bool { return f.busy }
+func (fakeProbe) Terminate(int) error                { return nil }
+func (fakeProbe) Kill(int) error                     { return nil }
 
 type env struct {
 	app     *App
@@ -86,7 +88,7 @@ func newEnv(t *testing.T) *env {
 		}},
 		Exe: "/bin/runnerkit", Probe: fakeProbe{}, GOOS: "linux", GOARCH: "amd64",
 		IsRoot: func() bool { return false },
-		Token:  func(flag string) (string, error) { return "tok", nil },
+		Token:  func(kind forge.Kind, flag string) (string, error) { return "tok", nil },
 		Exec:   runCommand,
 	}
 	return e
@@ -205,7 +207,7 @@ func TestAddRefusesANameTakenOnGitHub(t *testing.T) {
 func TestRemoveForceWithoutGitHub(t *testing.T) {
 	e := newEnv(t)
 	e.app.Run([]string{"add", "me/priv", "--name", "box", "--no-start"})
-	e.app.Token = func(string) (string, error) { return "", fmt.Errorf("no token") }
+	e.app.Token = func(forge.Kind, string) (string, error) { return "", fmt.Errorf("no token") }
 	if e.app.Run([]string{"remove", "box"}) == 0 {
 		t.Fatal("without a token, remove must fail unless forced")
 	}

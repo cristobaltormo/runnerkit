@@ -23,8 +23,12 @@ type fakeProbe struct {
 	cmd     *exec.Cmd
 }
 
-func (f *fakeProbe) OnBattery() bool       { f.mu.Lock(); defer f.mu.Unlock(); return f.battery }
-func (f *fakeProbe) Busy(string, int) bool { f.mu.Lock(); defer f.mu.Unlock(); return f.busy }
+func (f *fakeProbe) OnBattery() bool { f.mu.Lock(); defer f.mu.Unlock(); return f.battery }
+func (f *fakeProbe) Busy(string, int, sys.Style) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.busy
+}
 func (f *fakeProbe) Terminate(pid int) error {
 	f.mu.Lock()
 	f.killed++

@@ -75,13 +75,13 @@ func TestFetchVerifiesAndCaches(t *testing.T) {
 	defer srv.Close()
 	asset := ghapi.Asset{Name: "actions-runner-linux-x64-1.tar.gz", URL: srv.URL}
 	cache := t.TempDir()
-	if _, err := Fetch(nil, asset, hex.EncodeToString(sum[:]), cache); err != nil {
+	if _, err := Fetch(nil, asset.Name, asset.URL, hex.EncodeToString(sum[:]), cache); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Fetch(nil, asset, hex.EncodeToString(sum[:]), cache); err != nil || hits != 1 {
+	if _, err := Fetch(nil, asset.Name, asset.URL, hex.EncodeToString(sum[:]), cache); err != nil || hits != 1 {
 		t.Fatalf("second fetch must come from the cache: hits=%d err=%v", hits, err)
 	}
-	if _, err := Fetch(nil, asset, strings.Repeat("0", 64), t.TempDir()); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
+	if _, err := Fetch(nil, asset.Name, asset.URL, strings.Repeat("0", 64), t.TempDir()); err == nil || !strings.Contains(err.Error(), "checksum mismatch") {
 		t.Fatalf("expected a mismatch, got %v", err)
 	}
 }
