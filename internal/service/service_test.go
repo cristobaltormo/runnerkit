@@ -1,6 +1,7 @@
 package service
 
 import (
+	"encoding/xml"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,8 +32,8 @@ func TestLaunchdPlistEscapes(t *testing.T) {
 }
 
 func TestTaskXMLHasNoTimeLimit(t *testing.T) {
-	x := TaskXML(Spec{Name: "box", Exe: `C:\Users\me\runnerkit.exe`, Home: `C:\data`})
-	for _, want := range []string{"<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>", "<StopIfGoingOnBatteries>false", `&#34;--home&#34; &#34;C:\data&#34; &#34;box&#34;</Arguments>`, "<LogonTrigger>"} {
+	x := TaskXML(Spec{Name: "box", Exe: `C:\Users\me\runnerkit.exe`, Home: `C:\data`, User: `PC\me`})
+	for _, want := range []string{"<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>", "<StopIfGoingOnBatteries>false", `&#34;--home&#34; &#34;C:\data&#34; &#34;box&#34;</Arguments>`, "<LogonTrigger>", "<UserId>PC\\me</UserId>"} {
 		if !strings.Contains(x, want) {
 			t.Errorf("task lacks %q", want)
 		}
@@ -109,5 +110,32 @@ func TestStatusIsNormalised(t *testing.T) {
 		if got := m.Status("box"); got != c.want {
 			t.Errorf("%s %q: got %s want %s", c.goos, c.out, got, c.want)
 		}
+	}
+}
+
+func TestGeneratedFilesAreWellFormedXML(t *testing.T) {
+	spec := Spec{Name: "box", Exe: `C:\a&b\runnerkit.exe`, Home: `C:\d "x"`, User: `PC\me`}
+	for name, doc := range map[string]string{"task": strings.Replace(TaskXML(spec), `encoding="UTF-16"`, `encoding="UTF-8"`, 1), "plist": strings.Replace(LaunchdPlist(spec), "<!DOCTYPE", "<!--", 1)} {
+		if name == "plist" {
+			doc = strings.Replace(doc, "dtd\">", "dtd\"-->", 1)
+		}
+		d := xml.NewDecoder(strings.NewReader(doc))
+		for {
+			if _, err := d.Token(); err != nil {
+				if err.Error() != "EOF" {
+					t.Errorf("%s is not well-formed: %v", name, err)
+				}
+				break
+			}
+		}
+	}
+}
+
+func TestStopNowKillsBeforeStopping(t *testing.T) {
+	rec := &recorder{}
+	m := Manager{GOOS: "linux", Home: t.TempDir(), Run: rec.run}
+	m.StopNow("box")
+	if len(rec.calls) != 2 || !strings.Contains(rec.calls[0], "kill --signal=SIGKILL") || !strings.Contains(rec.calls[1], "stop") {
+		t.Fatalf("unexpected calls: %v", rec.calls)
 	}
 }

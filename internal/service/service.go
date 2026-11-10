@@ -15,6 +15,7 @@ type Spec struct {
 	Name string
 	Exe  string
 	Home string
+	User string
 }
 
 func (s Spec) args() []string {
@@ -128,11 +129,11 @@ func TaskXML(s Spec) string {
   </RegistrationInfo>
   <Triggers>
     <LogonTrigger>
-      <Enabled>true</Enabled>
+      <Enabled>true</Enabled>%s
     </LogonTrigger>
   </Triggers>
   <Principals>
-    <Principal id="Author">
+    <Principal id="Author">%s
       <LogonType>InteractiveToken</LogonType>
       <RunLevel>LeastPrivilege</RunLevel>
     </Principal>
@@ -161,7 +162,14 @@ func TaskXML(s Spec) string {
     </Exec>
   </Actions>
 </Task>
-`, html.EscapeString(s.Name), html.EscapeString(s.Exe), html.EscapeString(windowsArgs(s)))
+`, html.EscapeString(s.Name), taskUser(s, "\n      "), taskUser(s, "\n      "), html.EscapeString(s.Exe), html.EscapeString(windowsArgs(s)))
+}
+
+func taskUser(s Spec, indent string) string {
+	if s.User == "" {
+		return ""
+	}
+	return indent + "<UserId>" + html.EscapeString(s.User) + "</UserId>"
 }
 
 func utf16le(s string) []byte {
@@ -226,6 +234,9 @@ func (m Manager) Start(name string) error {
 		return m.run("systemctl", "--user", "start", UnitName(name))
 	case "darwin":
 		domain := fmt.Sprintf("gui/%d", m.UID)
+		if _, err := m.Run("launchctl", "print", domain); err != nil {
+			return fmt.Errorf("there is no graphical login session for this user, so launchd cannot start the runner yet; log in on the Mac screen once, then run `runnerkit start %s`", name)
+		}
 		if err := m.run("launchctl", "bootstrap", domain, m.unitPath(name)); err != nil {
 			if kerr := m.run("launchctl", "kickstart", domain+"/"+LaunchdLabel(name)); kerr != nil {
 				return err
@@ -248,6 +259,13 @@ func (m Manager) Stop(name string) error {
 		return m.run("schtasks", "/End", "/TN", TaskName(name))
 	}
 	return fmt.Errorf("services are not supported on %s", m.GOOS)
+}
+
+func (m Manager) StopNow(name string) error {
+	if m.GOOS == "linux" {
+		_ = m.run("systemctl", "--user", "kill", "--signal=SIGKILL", UnitName(name))
+	}
+	return m.Stop(name)
 }
 
 func (m Manager) Remove(name string) error {
