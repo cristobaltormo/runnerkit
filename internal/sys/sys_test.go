@@ -1,0 +1,89 @@
+package sys
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestParsers(t *testing.T) {
+	if !PmsetOnBattery("Now drawing from 'Battery Power'\n -InternalBattery-0 80%") {
+		t.Error("pmset on battery")
+	}
+	if PmsetOnBattery("Now drawing from 'AC Power'") {
+		t.Error("pmset on AC")
+	}
+	if !WindowsOnBattery("1\r\n") || WindowsOnBattery("2\r\n") || WindowsOnBattery("") {
+		t.Error("windows battery status")
+	}
+}
+
+func supply(t *testing.T, dir, name, kind, key, value string) {
+	p := filepath.Join(dir, name)
+	os.MkdirAll(p, 0o755)
+	os.WriteFile(filepath.Join(p, "type"), []byte(kind+"\n"), 0o644)
+	os.WriteFile(filepath.Join(p, key), []byte(value+"\n"), 0o644)
+}
+
+func TestLinuxOnBattery(t *testing.T) {
+	dir := t.TempDir()
+	if linuxOnBattery(dir) {
+		t.Error("no supplies means a desktop")
+	}
+	supply(t, dir, "BAT0", "Battery", "status", "Discharging")
+	supply(t, dir, "AC", "Mains", "online", "0")
+	if !linuxOnBattery(dir) {
+		t.Error("discharging with mains offline")
+	}
+	supply(t, dir, "AC", "Mains", "online", "1")
+	if linuxOnBattery(dir) {
+		t.Error("mains online wins")
+	}
+}
+
+func TestWorkerBelow(t *testing.T) {
+	ps := `  1     0 systemd
+ 100     1 runnerkit
+ 200   100 run.sh
+ 201   200 run-helper.sh
+ 202   201 Runner.Listener
+ 203   202 Runner.Worker
+ 300     1 Runner.Worker
+`
+	if !WorkerBelow(ps, 200) {
+		t.Error("worker is below 200")
+	}
+	if WorkerBelow(ps, 201) != true {
+		t.Error("worker is below 201")
+	}
+	if WorkerBelow(ps, 203) {
+		t.Error("the worker has no worker below it")
+	}
+	idle := "  200   100 run.sh\n  202   200 Runner.Listener\n  300     1 Runner.Worker\n"
+	if WorkerBelow(idle, 200) {
+		t.Error("a worker of another tree must not count")
+	}
+	if !WorkerBelow(idle, 0) {
+		t.Error("pid 0 means anywhere on the machine")
+	}
+	mac := " 202   200 /Users/me/runnerkit/runners/a/bin/Runner.Worker\n"
+	if !WorkerBelow(mac, 200) {
+		t.Error("macOS prints full paths")
+	}
+}
+
+func TestWindowsWorkerIn(t *testing.T) {
+	out := "C:\\Users\\me\\runnerkit\\runners\\a\\bin\\Runner.Worker.exe\r\n"
+	if !WindowsWorkerIn(out, `C:\Users\me\runnerkit\runners\a`) {
+		t.Error("worker of this runner")
+	}
+	if !WindowsWorkerIn(out, `c:\users\ME\runnerkit\runners\a\`) {
+		t.Error("case and trailing separator must not matter")
+	}
+	if WindowsWorkerIn(out, `C:\Users\me\runnerkit\runners\b`) {
+		t.Error("worker of another runner must not count")
+	}
+	if WindowsWorkerIn("\r\n", "") || !WindowsWorkerIn(out, "") {
+		t.Error("an empty dir means anywhere")
+	}
+}
