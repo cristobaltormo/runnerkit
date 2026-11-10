@@ -5,6 +5,7 @@ package supervise
 import (
 	"bytes"
 	"context"
+	"github.com/cristobaltormo/runnerkit/internal/sys"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,6 +31,7 @@ func (f *fakeProbe) Terminate(pid int) error {
 	f.mu.Unlock()
 	return f.cmd.Process.Kill()
 }
+func (f *fakeProbe) Kill(int) error { return f.cmd.Process.Kill() }
 func (f *fakeProbe) set(battery, busy bool) {
 	f.mu.Lock()
 	f.battery, f.busy = battery, busy
@@ -145,4 +147,28 @@ func TestBackoff(t *testing.T) {
 	if backoff(1) != 5*time.Second || backoff(2) != 10*time.Second || backoff(20) != 5*time.Minute {
 		t.Fatal("unexpected backoff")
 	}
+}
+
+func TestForcedKillReachesGrandchildren(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "pid")
+	os.WriteFile(filepath.Join(dir, "run.sh"), []byte("#!/bin/sh\nsleep 300 &\necho $! > "+marker+"\nwait\n"), 0o755)
+	cmd := exec.Command(filepath.Join(dir, "run.sh"))
+	sys.Detach(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	var grandchild string
+	waitFor(t, "grandchild pid", func() bool {
+		b, err := os.ReadFile(marker)
+		grandchild = strings.TrimSpace(string(b))
+		return err == nil && grandchild != ""
+	})
+	if err := (sys.Host{}).Kill(cmd.Process.Pid); err != nil {
+		t.Fatal(err)
+	}
+	cmd.Wait()
+	waitFor(t, "grandchild gone", func() bool {
+		return exec.Command("kill", "-0", grandchild).Run() != nil
+	})
 }

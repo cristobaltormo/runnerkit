@@ -25,6 +25,7 @@ type fakeProbe struct{ busy bool }
 func (fakeProbe) OnBattery() bool         { return false }
 func (f fakeProbe) Busy(string, int) bool { return f.busy }
 func (fakeProbe) Terminate(int) error     { return nil }
+func (fakeProbe) Kill(int) error          { return nil }
 
 type env struct {
 	app     *App

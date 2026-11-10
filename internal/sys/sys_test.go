@@ -87,3 +87,13 @@ func TestWindowsWorkerIn(t *testing.T) {
 		t.Error("an empty dir means anywhere")
 	}
 }
+
+func TestWorkerInDir(t *testing.T) {
+	ps := "/usr/bin/sshd -D\n/home/me/rk/runners/a/bin/Runner.Worker spawnclient 12 14\n"
+	if !WorkerInDir(ps, "/home/me/rk/runners/a") || !WorkerInDir(ps, "/home/me/rk/runners/a/") {
+		t.Error("worker of this runner")
+	}
+	if WorkerInDir(ps, "/home/me/rk/runners/b") || WorkerInDir(ps, "/home/me/rk/runners/a/x") {
+		t.Error("worker of another runner must not count")
+	}
+}

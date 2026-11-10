@@ -14,6 +14,7 @@ type Probe interface {
 	OnBattery() bool
 	Busy(dir string, rootPID int) bool
 	Terminate(pid int) error
+	Kill(pid int) error
 }
 
 type Host struct{}
@@ -70,11 +71,25 @@ func (Host) Busy(dir string, rootPID int) bool {
 			`Get-CimInstance Win32_Process -Filter "Name='Runner.Worker.exe'" | ForEach-Object { $_.ExecutablePath }`).Output()
 		return err == nil && WindowsWorkerIn(string(out), dir)
 	}
+	if rootPID <= 0 && dir != "" {
+		out, err := exec.Command("ps", "-A", "-o", "args=").Output()
+		return err == nil && WorkerInDir(string(out), dir)
+	}
 	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,comm=").Output()
 	if err != nil {
 		return false
 	}
 	return WorkerBelow(string(out), rootPID)
+}
+
+func WorkerInDir(psArgs, dir string) bool {
+	needle := strings.TrimRight(dir, "/") + "/bin/Runner.Worker"
+	for _, line := range strings.Split(psArgs, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func WindowsWorkerIn(out, dir string) bool {
@@ -127,6 +142,10 @@ func WorkerBelow(psOutput string, rootPID int) bool {
 		}
 	}
 	return false
+}
+
+func (Host) Kill(pid int) error {
+	return killTree(pid)
 }
 
 func (Host) Terminate(pid int) error {

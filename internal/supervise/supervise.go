@@ -39,6 +39,8 @@ func DefaultCommand(dir string) *exec.Cmd {
 	cmd := exec.Command(filepath.Join(dir, script))
 	cmd.Dir = dir
 	cmd.Env = append(withoutSecrets(os.Environ()), "RUNNER_MANUALLY_TRAP_SIG=1")
+	cmd.WaitDelay = 5 * time.Second
+	sys.Detach(cmd)
 	return cmd
 }
 
@@ -125,14 +127,14 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-func stopChild(cmd *exec.Cmd, exited <-chan error, probe sys.Probe) {
+func stopChild(cmd *exec.Cmd, exited <-chan error, probe sys.Probe, grace time.Duration) {
 	_ = probe.Terminate(cmd.Process.Pid)
 	select {
 	case <-exited:
 		return
-	case <-time.After(30 * time.Second):
+	case <-time.After(grace):
 	}
-	_ = cmd.Process.Kill()
+	_ = probe.Kill(cmd.Process.Pid)
 	select {
 	case <-exited:
 	case <-time.After(10 * time.Second):
@@ -143,8 +145,13 @@ func Run(ctx context.Context, cfg Config, log io.Writer) error {
 	if cfg.Poll == 0 {
 		cfg.Poll = 30 * time.Second
 	}
-	if cfg.Drain == 0 {
-		cfg.Drain = 45 * time.Minute
+	grace := 30 * time.Second
+	if runtime.GOOS == "linux" {
+		if cfg.Drain == 0 {
+			cfg.Drain = 45 * time.Minute
+		}
+	} else {
+		grace = 8 * time.Second
 	}
 	if cfg.CleanAfter == 0 {
 		cfg.CleanAfter = 14 * 24 * time.Hour
@@ -196,7 +203,7 @@ func Run(ctx context.Context, cfg Config, log io.Writer) error {
 			case <-ticker.C:
 				if cfg.PauseOnBattery && cfg.Probe.OnBattery() && !cfg.Probe.Busy(cfg.Dir, cmd.Process.Pid) {
 					logf("on battery and idle, stopping the runner")
-					stopChild(cmd, exited, cfg.Probe)
+					stopChild(cmd, exited, cfg.Probe, grace)
 					pausedForBattery = true
 					break watch
 				}
@@ -211,7 +218,7 @@ func Run(ctx context.Context, cfg Config, log io.Writer) error {
 					}
 				}
 				logf("stopping the runner")
-				stopChild(cmd, exited, cfg.Probe)
+				stopChild(cmd, exited, cfg.Probe, grace)
 				ticker.Stop()
 				return nil
 			}
