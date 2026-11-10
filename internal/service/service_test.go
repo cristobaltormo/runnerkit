@@ -2,6 +2,7 @@ package service
 
 import (
 	"encoding/xml"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -71,7 +72,14 @@ func TestLinuxLifecycle(t *testing.T) {
 
 func TestDarwinAndWindowsCommands(t *testing.T) {
 	rec := &recorder{}
-	m := Manager{GOOS: "darwin", Home: t.TempDir(), UID: 501, Run: rec.run}
+	notLoaded := func(name string, args ...string) ([]byte, error) {
+		out, _ := rec.run(name, args...)
+		if len(args) > 1 && args[0] == "print" && strings.Contains(args[1], "/dev.runnerkit.") {
+			return nil, errors.New("not loaded")
+		}
+		return out, nil
+	}
+	m := Manager{GOOS: "darwin", Home: t.TempDir(), UID: 501, Run: notLoaded}
 	m.Install(Spec{Name: "box", Exe: "/x"})
 	m.Start("box")
 	m.Stop("box")
@@ -137,5 +145,70 @@ func TestStopNowKillsBeforeStopping(t *testing.T) {
 	m.StopNow("box")
 	if len(rec.calls) != 2 || !strings.Contains(rec.calls[0], "kill --signal=SIGKILL") || !strings.Contains(rec.calls[1], "stop") {
 		t.Fatalf("unexpected calls: %v", rec.calls)
+	}
+}
+
+func TestDarwinStartRetriesAfterAnAsyncStop(t *testing.T) {
+	attempts := 0
+	m := Manager{GOOS: "darwin", Home: t.TempDir(), UID: 501, Retries: 5, Pause: func() {}, Run: func(name string, args ...string) ([]byte, error) {
+		if len(args) > 1 && args[0] == "print" && strings.Contains(args[1], "/dev.runnerkit.") {
+			return nil, errors.New("not loaded")
+		}
+		if len(args) > 0 && args[0] == "bootstrap" {
+			attempts++
+			if attempts < 3 {
+				return []byte("Bootstrap failed: 5: Input/output error"), errors.New("exit 5")
+			}
+		}
+		return nil, nil
+	}}
+	if err := m.Start("box"); err != nil || attempts != 3 {
+		t.Fatalf("start must retry until launchd lets go: attempts=%d err=%v", attempts, err)
+	}
+	attempts = -100
+	if err := m.Start("box"); err == nil {
+		t.Fatal("a start that never works must fail")
+	}
+}
+
+func TestDarwinStopIgnoresAnAlreadyStoppedJob(t *testing.T) {
+	m := Manager{GOOS: "darwin", UID: 501, Run: func(string, ...string) ([]byte, error) {
+		return []byte("Boot-out failed: 3: No such process"), errors.New("exit 3")
+	}}
+	if err := m.Stop("box"); err != nil {
+		t.Fatalf("an already stopped job is not an error: %v", err)
+	}
+}
+
+func TestDarwinStartDoesNotRebootstrapARunningJob(t *testing.T) {
+	var calls []string
+	m := Manager{GOOS: "darwin", UID: 501, Run: func(name string, args ...string) ([]byte, error) {
+		calls = append(calls, strings.Join(args, " "))
+		return []byte("state = running"), nil
+	}}
+	if err := m.Start("box"); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range calls {
+		if strings.HasPrefix(c, "bootstrap") || strings.HasPrefix(c, "kickstart") {
+			t.Errorf("a running job must be left alone: %v", calls)
+		}
+	}
+}
+
+func TestDarwinStopWaitsUntilLaunchdForgetsTheJob(t *testing.T) {
+	prints := 0
+	m := Manager{GOOS: "darwin", UID: 501, Retries: 10, Pause: func() {}, Run: func(name string, args ...string) ([]byte, error) {
+		if len(args) > 0 && args[0] == "print" {
+			prints++
+			if prints < 4 {
+				return []byte("state = running"), nil
+			}
+			return nil, errors.New("gone")
+		}
+		return nil, nil
+	}}
+	if err := m.Stop("box"); err != nil || prints != 4 {
+		t.Fatalf("stop must wait until the job is gone: prints=%d err=%v", prints, err)
 	}
 }

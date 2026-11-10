@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode/utf16"
 )
 
@@ -27,6 +28,9 @@ type Manager struct {
 	Home string
 	UID  int
 	Run  func(name string, args ...string) ([]byte, error)
+
+	Retries int
+	Pause   func()
 }
 
 func TaskName(name string) string { return "runnerkit-" + name }
@@ -237,12 +241,20 @@ func (m Manager) Start(name string) error {
 		if _, err := m.Run("launchctl", "print", domain); err != nil {
 			return fmt.Errorf("there is no graphical login session for this user, so launchd cannot start the runner yet; log in on the Mac screen once, then run `runnerkit start %s`", name)
 		}
-		if err := m.run("launchctl", "bootstrap", domain, m.unitPath(name)); err != nil {
-			if kerr := m.run("launchctl", "kickstart", domain+"/"+LaunchdLabel(name)); kerr != nil {
-				return err
+		if out, err := m.Run("launchctl", "print", domain+"/"+LaunchdLabel(name)); err == nil {
+			if strings.Contains(string(out), "state = running") {
+				return nil
 			}
+			return m.run("launchctl", "kickstart", domain+"/"+LaunchdLabel(name))
 		}
-		return nil
+		var err error
+		for attempt := 0; attempt < m.retries(); attempt++ {
+			if err = m.run("launchctl", "bootstrap", domain, m.unitPath(name)); err == nil {
+				return nil
+			}
+			m.pause()
+		}
+		return err
 	case "windows":
 		return m.run("schtasks", "/Run", "/TN", TaskName(name))
 	}
@@ -254,11 +266,36 @@ func (m Manager) Stop(name string) error {
 	case "linux":
 		return m.run("systemctl", "--user", "stop", UnitName(name))
 	case "darwin":
-		return m.run("launchctl", "bootout", fmt.Sprintf("gui/%d/%s", m.UID, LaunchdLabel(name)))
+		out, err := m.Run("launchctl", "bootout", fmt.Sprintf("gui/%d/%s", m.UID, LaunchdLabel(name)))
+		if err != nil && !strings.Contains(string(out), "No such process") && !strings.Contains(string(out), "Could not find") {
+			return fmt.Errorf("launchctl bootout: %w: %s", err, strings.TrimSpace(string(out)))
+		}
+		for i := 0; i < m.retries(); i++ {
+			if _, err := m.Run("launchctl", "print", fmt.Sprintf("gui/%d/%s", m.UID, LaunchdLabel(name))); err != nil {
+				break
+			}
+			m.pause()
+		}
+		return nil
 	case "windows":
 		return m.run("schtasks", "/End", "/TN", TaskName(name))
 	}
 	return fmt.Errorf("services are not supported on %s", m.GOOS)
+}
+
+func (m Manager) retries() int {
+	if m.Retries > 0 {
+		return m.Retries
+	}
+	return 20
+}
+
+func (m Manager) pause() {
+	if m.Pause != nil {
+		m.Pause()
+		return
+	}
+	time.Sleep(1500 * time.Millisecond)
 }
 
 func (m Manager) StopNow(name string) error {
