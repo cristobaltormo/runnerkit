@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -93,8 +94,11 @@ func TestExtractTar(t *testing.T) {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(filepath.Join(dest, "run.sh"))
-	if err != nil || info.Mode().Perm()&0o100 == 0 {
-		t.Fatalf("run.sh must be executable: %v %v", info, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o100 == 0 {
+		t.Fatalf("run.sh must be executable: %v", info.Mode())
 	}
 }
 

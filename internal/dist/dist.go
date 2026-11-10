@@ -176,7 +176,7 @@ func extractTar(archive, dest string) error {
 		case tar.TypeReg:
 			err = writeFile(target, os.FileMode(hdr.Mode), tr)
 		case tar.TypeSymlink:
-			if filepath.IsAbs(hdr.Linkname) {
+			if filepath.IsAbs(hdr.Linkname) || strings.HasPrefix(hdr.Linkname, "/") || strings.HasPrefix(hdr.Linkname, `\`) {
 				return fmt.Errorf("archive link %q points outside the destination", hdr.Name)
 			}
 			if _, lerr := safeJoin(dest, filepath.Join(filepath.Dir(hdr.Name), hdr.Linkname)); lerr != nil {
