@@ -349,11 +349,11 @@ func TestGitLabDownload(t *testing.T) {
 
 func TestDaemonCommands(t *testing.T) {
 	gh := Daemon(GitHub, "/r", "linux")
-	if !strings.HasSuffix(gh.Path, "run.sh") {
+	if filepath.Base(gh.Path) != "run.sh" {
 		t.Error(gh.Path)
 	}
 	gl := Daemon(GitLab, "/r", "linux")
-	if !strings.Contains(strings.Join(gl.Args, " "), "run --config /r/config.toml") {
+	if !strings.Contains(strings.Join(gl.Args, " "), "run --config "+filepath.Join("/r", "config.toml")) {
 		t.Error(gl.Args)
 	}
 	fj := Daemon(Forgejo, "/r", "windows")
