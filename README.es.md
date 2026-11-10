@@ -71,7 +71,8 @@ runnerkit clean --dry-run                  qué carpetas viejas se borrarían
 runnerkit remove NOMBRE                    lo da de baja en GitHub y borra todo
 ```
 
-Otras opciones de `add`: `--name`, `--no-start`, `--no-pause-on-battery` y `--allow-public`.
+Otras opciones de `add`: `--name`, `--no-start`, `--no-pause-on-battery`, `--allow-public` y
+`--replace` (sustituye un runner del mismo nombre que ya esté registrado).
 `clean --days N` cambia la antigüedad mínima de una carpeta de trabajo. `remove --force`
 borra en local cuando no se puede llegar a GitHub.
 
@@ -94,8 +95,9 @@ cerrar sesión. En macOS y Windows el runner arranca al iniciar sesión y se det
 
 Solo GitHub.com por ahora; los runners de Forgejo y Gitea están previstos. Un trabajo a la
 vez por runner. Al parar el servicio solo se espera a que termine un trabajo en marcha en
-Linux; en macOS y Windows el sistema termina el proceso, y por eso `runnerkit stop` se niega
-mientras haya un trabajo. El código de macOS y Windows está cubierto por pruebas de los
+Linux; en macOS y Windows el sistema termina el proceso. `runnerkit stop`, `restart` y
+`remove` se niegan en todos los sistemas mientras haya un trabajo, salvo con `--force`. El
+código de macOS y Windows está cubierto por pruebas de los
 ficheros y comandos que genera y tiene menos uso real que el de Linux. Cómo funciona todo, y
 por qué, está en [docs/how-it-works.md](docs/how-it-works.md).
 

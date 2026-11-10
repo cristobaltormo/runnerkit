@@ -73,7 +73,8 @@ runnerkit clean --dry-run                what old build folders would be deleted
 runnerkit remove NAME                    unregister from GitHub and delete everything
 ```
 
-Other flags of `add`: `--name`, `--no-start`, `--no-pause-on-battery` and `--allow-public`.
+Other flags of `add`: `--name`, `--no-start`, `--no-pause-on-battery`, `--allow-public` and
+`--replace` (take over a runner of the same name that is already registered).
 `clean --days N` changes how old a work folder must be. `remove --force` deletes locally
 when GitHub cannot be reached.
 
@@ -96,7 +97,8 @@ out. On macOS and Windows the runner starts when you log in and stops when you l
 
 GitHub.com only for now; support for Forgejo and Gitea runners is planned. One job at a time
 per runner. Stopping the service waits for a running job to finish only on Linux; on macOS
-and Windows the system ends the process, so `runnerkit stop` refuses while a job runs. The
+and Windows the system ends the process. `runnerkit stop`, `restart` and `remove` refuse on
+every system while a job runs unless you pass `--force`. The
 macOS and Windows code is covered by tests of the files and commands it generates and has
 had less real use than the Linux one. How everything works, and why, is in
 [docs/how-it-works.md](docs/how-it-works.md).
