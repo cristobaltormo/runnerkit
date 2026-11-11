@@ -35,8 +35,14 @@ func newGitLab(cfg Config) *gitlab {
 func (g *gitlab) Kind() Kind { return GitLab }
 
 func (g *gitlab) CheckScope(scope string) error {
-	if strings.Count(scope, "/") < 1 || strings.HasPrefix(scope, "/") || strings.HasSuffix(scope, "/") {
+	parts := strings.Split(scope, "/")
+	if len(parts) < 2 {
 		return fmt.Errorf("%q is not a project: use group/project (group runners are only supported on GitHub for now)", scope)
+	}
+	for _, part := range parts {
+		if !safeName.MatchString(part) {
+			return fmt.Errorf("%q is not a valid project path", scope)
+		}
 	}
 	return nil
 }
@@ -80,15 +86,21 @@ func (g *gitlab) NameTaken(scope, name string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	var runners []struct {
-		Description string `json:"description"`
-	}
-	if err := g.api.do(http.MethodGet, "/projects/"+strconv.Itoa(p.ID)+"/runners?per_page=100", nil, &runners); err != nil {
-		return false, g.explain(err)
-	}
-	for _, r := range runners {
-		if r.Description == name {
-			return true, nil
+	for page := 1; page <= 20; page++ {
+		var runners []struct {
+			Description string `json:"description"`
+		}
+		path := fmt.Sprintf("/projects/%d/runners?per_page=100&page=%d", p.ID, page)
+		if err := g.api.do(http.MethodGet, path, nil, &runners); err != nil {
+			return false, g.explain(err)
+		}
+		for _, r := range runners {
+			if r.Description == name {
+				return true, nil
+			}
+		}
+		if len(runners) < 100 {
+			break
 		}
 	}
 	return false, nil
@@ -139,8 +151,8 @@ func (g *gitlab) Register(req Registration) (Registered, error) {
 	}
 	bin := filepath.Join(req.Dir, BinaryName(GitLab, req.GOOS))
 	args := []string{"register", "--non-interactive", "--config", filepath.Join(req.Dir, "config.toml"),
-		"--url", g.base, "--token", created.Token, "--executor", "shell"}
-	if err := req.Exec(req.Dir, nil, bin, args...); err != nil {
+		"--url", g.base, "--executor", "shell"}
+	if err := req.Exec(req.Dir, []string{"CI_SERVER_TOKEN=" + created.Token}, bin, args...); err != nil {
 		_ = g.api.do(http.MethodDelete, "/runners/"+strconv.Itoa(created.ID), nil, nil)
 		return Registered{}, redactToken(err, created.Token)
 	}
@@ -148,10 +160,16 @@ func (g *gitlab) Register(req Registration) (Registered, error) {
 }
 
 func (g *gitlab) Deregister(rec Record) error {
-	if rec.RunnerID != "" {
-		if err := g.api.do(http.MethodDelete, "/runners/"+url.PathEscape(rec.RunnerID), nil, nil); err != nil {
-			return g.explain(err)
-		}
+	if rec.RunnerID == "" {
+		return nil
+	}
+	err := g.api.do(http.MethodDelete, "/runners/"+url.PathEscape(rec.RunnerID), nil, nil)
+	var he *httpError
+	if errors.As(err, &he) && he.Status == 404 {
+		return nil
+	}
+	if err != nil {
+		return g.explain(err)
 	}
 	return nil
 }

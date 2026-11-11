@@ -2,6 +2,7 @@ package forge
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -27,10 +28,7 @@ func (e *httpError) Error() string {
 }
 
 func (c *apiClient) do(method, path string, form url.Values, out any) error {
-	client := c.http
-	if client == nil {
-		client = http.DefaultClient
-	}
+	client := sameHostOnly(c.http)
 	var body io.Reader
 	if form != nil {
 		body = strings.NewReader(form.Encode())
@@ -59,6 +57,24 @@ func (c *apiClient) do(method, path string, form url.Values, out any) error {
 		return nil
 	}
 	return json.Unmarshal(data, out)
+}
+
+func sameHostOnly(base *http.Client) *http.Client {
+	client := &http.Client{}
+	if base != nil {
+		*client = *base
+	}
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 5 {
+			return errors.New("too many redirects")
+		}
+		first := via[0].URL
+		if req.URL.Host != first.Host || req.URL.Scheme != first.Scheme {
+			return fmt.Errorf("the server redirected to %s://%s; use the final address of the server so the token is not sent anywhere else", req.URL.Scheme, req.URL.Host)
+		}
+		return nil
+	}
+	return client
 }
 
 func message(data []byte) string {

@@ -128,6 +128,7 @@ func (a *App) cmdAdd(args []string) error {
 	noStart := fs.Bool("no-start", false, "install but do not start")
 	group := fs.String("group", "", "runner group (GitHub organizations only)")
 	replace := fs.Bool("replace", false, "take over a runner of the same name already registered on GitHub")
+	allowHTTP := fs.Bool("allow-http", false, "allow a server address that uses plain http over the internet")
 	pos, err := parse(fs, args)
 	if err != nil {
 		return err
@@ -141,6 +142,17 @@ func (a *App) cmdAdd(args []string) error {
 	}
 	signal.Ignore(os.Interrupt, syscall.SIGTERM)
 	defer signal.Reset(os.Interrupt, syscall.SIGTERM)
+	if kind != forge.GitHub {
+		if err := forge.CheckTransport(baseURL, *allowHTTP); err != nil {
+			return err
+		}
+		if *replace {
+			return fmt.Errorf("--replace is only available for GitHub; remove the old runner first")
+		}
+	}
+	if err := os.MkdirAll(a.DataDir, 0o700); err != nil {
+		return err
+	}
 	tok, err := a.Token(kind, *token)
 	if err != nil {
 		if kind == forge.Gogs {

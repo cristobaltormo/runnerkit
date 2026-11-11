@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -82,6 +83,7 @@ func TestDetect(t *testing.T) {
 	loginRedirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v4/version" {
 			w.WriteHeader(401)
+			fmt.Fprint(w, `{"message":"401 Unauthorized"}`)
 			return
 		}
 		if r.URL.Path == "/users/sign_in" {
@@ -221,8 +223,9 @@ func TestGiteaFamilyRegisterAndDeregister(t *testing.T) {
 	if err := p.Deregister(Record{Scope: "me/app", RunnerID: "7"}); err != nil || deleted == "" {
 		t.Errorf("deregister: %v %q", err, deleted)
 	}
-	if err := p.Deregister(Record{Scope: "me/app"}); err == nil {
-		t.Error("unknown id must be an error")
+	deleted = ""
+	if err := p.Deregister(Record{Scope: "me/app", Name: "taken"}); err != nil {
+		t.Errorf("without an id the runner is looked up by name: %v", err)
 	}
 	p2 := newGitea(Config{Kind: Forgejo, BaseURL: srv.URL, Token: "wrong", HTTP: srv.Client()})
 	if _, err := p2.IsPrivate("me/app"); err == nil || !strings.Contains(err.Error(), "token") {
@@ -316,8 +319,8 @@ func TestGitLabLifecycle(t *testing.T) {
 		}
 	}
 	joined := strings.Join(calls[0].args, " ")
-	if !strings.Contains(joined, "--token glrt-SECRET") || !strings.Contains(joined, "--executor shell") {
-		t.Errorf("register args: %s", joined)
+	if strings.Contains(joined, "glrt-SECRET") || !strings.Contains(joined, "--executor shell") || len(calls[0].env) != 1 || calls[0].env[0] != "CI_SERVER_TOKEN=glrt-SECRET" {
+		t.Errorf("gitlab must receive the token through the environment only: args=%s env=%v", joined, calls[0].env)
 	}
 	if err := p.Deregister(Record{RunnerID: "9"}); err != nil || !deleted {
 		t.Errorf("deregister: %v", err)
@@ -380,14 +383,79 @@ func TestGiteaUsesPostForTheRegistrationTokenAndListsAnObject(t *testing.T) {
 		t.Errorf("object listing: %v %v", taken, err)
 	}
 	var calls []recorded
-	if _, err := p.Register(Registration{Dir: t.TempDir(), Scope: "me/app", Name: "b", GOOS: "linux", Exec: recorder(&calls, nil)}); err != nil {
+	dir := t.TempDir()
+	if _, err := p.Register(Registration{Dir: dir, Scope: "me/app", Name: "b", GOOS: "linux",
+		Exec: recorder(&calls, func(d string) { os.WriteFile(filepath.Join(d, ".runner"), []byte(`{"id":3}`), 0o600) })}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(strings.Join(calls[0].args, " "), "--token GT") {
-		t.Errorf("token: %v", calls[0].args)
+	if strings.Contains(strings.Join(calls[0].args, " "), "GT") || len(calls[0].env) != 1 || calls[0].env[0] != "GITEA_RUNNER_REGISTRATION_TOKEN=GT" {
+		t.Errorf("gitea must receive the token through the environment only: args=%v env=%v", calls[0].args, calls[0].env)
 	}
 	pf := newGitea(Config{Kind: Forgejo, BaseURL: srv.URL, Token: "tk", HTTP: srv.Client()})
 	if _, err := pf.registrationToken("me/app"); err != nil {
 		t.Errorf("forgejo kind must fall back to POST when GET is refused: %v", err)
+	}
+}
+
+func TestDetectRefusesWhatOnlyLooksLikeAForge(t *testing.T) {
+	html := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, "<html>version</html>") }))
+	defer html.Close()
+	if _, err := Detect(html.Client(), html.URL); err == nil {
+		t.Error("a page that answers 200 HTML to everything is not a forge")
+	}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) }))
+	defer proxy.Close()
+	if got, err := Detect(proxy.Client(), proxy.URL); err == nil {
+		t.Errorf("a proxy that answers 401 to everything must not become GitLab: %q", got)
+	}
+}
+
+func TestTokensAreNotSentToAnotherHost(t *testing.T) {
+	var leaked atomic.Bool
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("PRIVATE-TOKEN") != "" {
+			leaked.Store(true)
+		}
+		fmt.Fprint(w, `{"id":1,"visibility":"private"}`)
+	}))
+	defer other.Close()
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, other.URL+r.URL.Path, http.StatusMovedPermanently)
+	}))
+	defer first.Close()
+	p := newGitLab(Config{Kind: GitLab, BaseURL: first.URL, Token: "SECRET", HTTP: first.Client()})
+	_, err := p.IsPrivate("a/b")
+	if err == nil || !strings.Contains(err.Error(), "redirected") {
+		t.Errorf("a cross-host redirect must be refused: %v", err)
+	}
+	if leaked.Load() {
+		t.Error("the token reached another host")
+	}
+}
+
+func TestCheckTransport(t *testing.T) {
+	for _, ok := range []string{"https://git.example.com", "http://localhost:3000", "http://192.168.1.5:3000", "http://gitea.lan", "http://gitea", "http://10.0.0.2"} {
+		if err := CheckTransport(ok, false); err != nil {
+			t.Errorf("%s should be allowed: %v", ok, err)
+		}
+	}
+	if err := CheckTransport("http://git.example.com", false); err == nil || !strings.Contains(err.Error(), "--allow-http") {
+		t.Errorf("public plain http must be refused: %v", err)
+	}
+	if err := CheckTransport("http://git.example.com", true); err != nil {
+		t.Errorf("--allow-http: %v", err)
+	}
+}
+
+func TestScopesCannotEscapeTheirPath(t *testing.T) {
+	g := newGitea(Config{Kind: Gitea, BaseURL: "http://x"})
+	for _, bad := range []string{"o/r?x", "o/r#x", "o/../r", "o/r/extra", "o", "/r", "o/r%2Fx"} {
+		if g.CheckScope(bad) == nil {
+			t.Errorf("%q must be refused", bad)
+		}
+	}
+	gl := newGitLab(Config{Kind: GitLab, BaseURL: "http://x"})
+	if gl.CheckScope("g/sub/app") != nil || gl.CheckScope("g/../app") == nil || gl.CheckScope("g/app?x") == nil {
+		t.Error("gitlab path validation")
 	}
 }

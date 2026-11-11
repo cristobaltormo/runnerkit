@@ -144,3 +144,15 @@ func TestGogsIsExplainedNotInstalled(t *testing.T) {
 		t.Fatalf("Gogs must be explained even without a token: %s", e.errBuf)
 	}
 }
+
+func TestPlainHTTPAndReplaceAreRefusedOutsideGitHub(t *testing.T) {
+	e := newEnv(t)
+	e.app.Token = func(kind forge.Kind, flag string) (string, error) { return "tk", nil }
+	if e.app.Run([]string{"add", "http://git.example.com/me/app", "--forge", "gitea"}) == 0 || !strings.Contains(e.errBuf.String(), "--allow-http") {
+		t.Errorf("public plain http must be refused: %s", e.errBuf)
+	}
+	e.errBuf.Reset()
+	if e.app.Run([]string{"add", "https://git.example.com/me/app", "--forge", "gitea", "--replace"}) == 0 || !strings.Contains(e.errBuf.String(), "only available for GitHub") {
+		t.Errorf("--replace outside GitHub: %s", e.errBuf)
+	}
+}

@@ -3,6 +3,7 @@ package forge
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -240,17 +241,40 @@ func Detect(httpc *http.Client, baseURL string) (Kind, error) {
 		n, _ := resp.Body.Read(buf)
 		return resp.StatusCode, string(buf[:n])
 	}
-	if code, _ := probe("/api/forgejo/v1/version"); code == http.StatusOK {
+	isJSONVersion := func(code int, body string) bool {
+		return code == http.StatusOK && strings.HasPrefix(strings.TrimSpace(body), "{") && strings.Contains(body, "version")
+	}
+	if code, body := probe("/api/forgejo/v1/version"); isJSONVersion(code, body) {
 		return Forgejo, nil
 	}
-	if code, body := probe("/api/v1/version"); code == http.StatusOK && strings.HasPrefix(strings.TrimSpace(body), "{") && strings.Contains(body, "version") {
+	if code, body := probe("/api/v1/version"); isJSONVersion(code, body) {
 		return Gitea, nil
 	}
-	if code, _ := probe("/api/v4/version"); code == http.StatusOK || code == http.StatusUnauthorized {
+	if code, body := probe("/api/v4/version"); isJSONVersion(code, body) || (code == http.StatusUnauthorized && strings.Contains(body, "401 Unauthorized")) {
 		return GitLab, nil
 	}
-	if code, _ := probe("/api/v1/user"); code == http.StatusUnauthorized || code == http.StatusForbidden {
-		return Gogs, nil
+	if code, _ := probe("/api/v1/version"); code == http.StatusNotFound {
+		if code, _ := probe("/api/v1/user"); code == http.StatusUnauthorized || code == http.StatusForbidden {
+			return Gogs, nil
+		}
 	}
 	return "", fmt.Errorf("could not tell which forge %s runs; pass --forge github, forgejo, gitea or gitlab", baseURL)
+}
+
+func CheckTransport(baseURL string, allowHTTP bool) error {
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return fmt.Errorf("%q is not a valid address", baseURL)
+	}
+	if u.Scheme == "https" || allowHTTP {
+		return nil
+	}
+	host := u.Hostname()
+	if host == "localhost" || strings.HasSuffix(host, ".local") || strings.HasSuffix(host, ".lan") || !strings.Contains(host, ".") {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && (ip.IsLoopback() || ip.IsPrivate()) {
+		return nil
+	}
+	return fmt.Errorf("%s uses plain http, so the token would travel unencrypted; use https, or pass --allow-http if you understand the risk", baseURL)
 }

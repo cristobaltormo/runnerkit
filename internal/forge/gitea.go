@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -43,17 +44,32 @@ func (g *gitea) Kind() Kind { return g.kind }
 
 func (g *gitea) CheckScope(scope string) error {
 	owner, repo, ok := strings.Cut(scope, "/")
-	if !ok || owner == "" || repo == "" || strings.Contains(repo, "/") {
+	if !ok || !safeName.MatchString(owner) || !safeName.MatchString(repo) {
 		return fmt.Errorf("%q is not a repository: use owner/repo (organization runners are only supported on GitHub for now)", scope)
 	}
 	return nil
+}
+
+var nameChars = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+type nameRule struct{}
+
+func (nameRule) MatchString(s string) bool {
+	return s != "." && s != ".." && nameChars.MatchString(s)
+}
+
+var safeName = nameRule{}
+
+func repoPath(scope string) string {
+	owner, repo, _ := strings.Cut(scope, "/")
+	return "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
 }
 
 func (g *gitea) IsPrivate(scope string) (bool, error) {
 	var out struct {
 		Private bool `json:"private"`
 	}
-	if err := g.api.do(http.MethodGet, "/repos/"+scope, nil, &out); err != nil {
+	if err := g.api.do(http.MethodGet, repoPath(scope), nil, &out); err != nil {
 		return false, g.explain(err)
 	}
 	return out.Private, nil
@@ -72,28 +88,45 @@ func (g *gitea) explain(err error) error {
 	return err
 }
 
+type runnerEntry struct {
+	ID   json.Number `json:"id"`
+	Name string      `json:"name"`
+}
+
+func (g *gitea) runners(scope string) ([]runnerEntry, bool, error) {
+	var all []runnerEntry
+	for page := 1; page <= 20; page++ {
+		var raw json.RawMessage
+		err := g.api.do(http.MethodGet, fmt.Sprintf("%s/actions/runners?limit=50&page=%d", repoPath(scope), page), nil, &raw)
+		var he *httpError
+		if errors.As(err, &he) && (he.Status == 404 || he.Status == 405) && page == 1 {
+			return nil, false, nil
+		}
+		if err != nil {
+			return nil, false, g.explain(err)
+		}
+		var list []runnerEntry
+		if json.Unmarshal(raw, &list) != nil {
+			var wrapped struct {
+				Runners []runnerEntry `json:"runners"`
+			}
+			if err := json.Unmarshal(raw, &wrapped); err != nil {
+				return nil, false, err
+			}
+			list = wrapped.Runners
+		}
+		all = append(all, list...)
+		if len(list) < 50 {
+			break
+		}
+	}
+	return all, true, nil
+}
+
 func (g *gitea) NameTaken(scope, name string) (bool, error) {
-	var raw json.RawMessage
-	err := g.api.do(http.MethodGet, "/repos/"+scope+"/actions/runners", nil, &raw)
-	var he *httpError
-	if errors.As(err, &he) && (he.Status == 404 || he.Status == 405) {
-		return false, nil
-	}
-	if err != nil {
-		return false, g.explain(err)
-	}
-	type entry struct {
-		Name string `json:"name"`
-	}
-	var list []entry
-	if json.Unmarshal(raw, &list) != nil {
-		var wrapped struct {
-			Runners []entry `json:"runners"`
-		}
-		if err := json.Unmarshal(raw, &wrapped); err != nil {
-			return false, err
-		}
-		list = wrapped.Runners
+	list, ok, err := g.runners(scope)
+	if err != nil || !ok {
+		return false, err
 	}
 	for _, r := range list {
 		if r.Name == name {
@@ -104,7 +137,7 @@ func (g *gitea) NameTaken(scope, name string) (bool, error) {
 }
 
 func (g *gitea) registrationToken(scope string) (string, error) {
-	path := "/repos/" + scope + "/actions/runners/registration-token"
+	path := repoPath(scope) + "/actions/runners/registration-token"
 	methods := []string{http.MethodGet, http.MethodPost}
 	if g.kind == Gitea {
 		methods = []string{http.MethodPost, http.MethodGet}
@@ -198,11 +231,21 @@ func (g *gitea) Register(req Registration) (Registered, error) {
 	}
 	bin := filepath.Join(req.Dir, BinaryName(g.kind, req.GOOS))
 	args := []string{"register", "--no-interactive", "--instance", g.base, "--name", req.Name,
-		"--labels", HostLabels(req.Labels), "--token", token}
-	if err := req.Exec(req.Dir, nil, bin, args...); err != nil {
+		"--labels", HostLabels(req.Labels)}
+	var env []string
+	if g.kind == Gitea {
+		env = []string{"GITEA_RUNNER_REGISTRATION_TOKEN=" + token}
+	} else {
+		args = append(args, "--token", token)
+	}
+	if err := req.Exec(req.Dir, env, bin, args...); err != nil {
 		return Registered{}, redactToken(err, token)
 	}
-	return Registered{RunnerID: readRunnerID(filepath.Join(req.Dir, ".runner"))}, nil
+	id := readRunnerID(filepath.Join(req.Dir, ".runner"))
+	if id == "" {
+		return Registered{}, errors.New("the runner registered but its id could not be read from the .runner file")
+	}
+	return Registered{RunnerID: id}, nil
 }
 
 func readRunnerID(path string) string {
@@ -220,11 +263,31 @@ func readRunnerID(path string) string {
 }
 
 func (g *gitea) Deregister(rec Record) error {
-	if rec.RunnerID == "" {
-		return errors.New("the runner id is unknown")
+	id := rec.RunnerID
+	if id == "" {
+		list, ok, err := g.runners(rec.Scope)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("the runner id is unknown")
+		}
+		for _, r := range list {
+			if r.Name == rec.Name {
+				id = r.ID.String()
+			}
+		}
+		if id == "" {
+			return nil
+		}
 	}
-	path := "/repos/" + rec.Scope + "/actions/runners/" + url.PathEscape(rec.RunnerID)
-	if err := g.api.do(http.MethodDelete, path, nil, nil); err != nil {
+	path := repoPath(rec.Scope) + "/actions/runners/" + url.PathEscape(id)
+	err := g.api.do(http.MethodDelete, path, nil, nil)
+	var he *httpError
+	if errors.As(err, &he) && he.Status == 404 {
+		return nil
+	}
+	if err != nil {
 		return g.explain(err)
 	}
 	return nil
