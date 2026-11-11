@@ -93,7 +93,7 @@ runnerkit remove NAME                    unregister from GitHub and delete every
 
 Other flags of `add`: `--name`, `--no-start`, `--no-pause-on-battery`, `--allow-public`,
 `--replace` (take over a runner of the same name that is already registered on GitHub),
-`--forge` (when the address does not say which forge it is) and `--runner-binary`.
+`--forge` (when the address does not say which forge it is), `--runner-binary` and `--allow-http`.
 `clean --days N` changes how old a work folder must be. `remove --force` deletes locally
 when GitHub cannot be reached.
 

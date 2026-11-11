@@ -22,6 +22,13 @@ service, no folder). The test servers ran in Docker. Where each combination was 
 | Gitea | yes | yes | unit tests only |
 | GitLab | yes | yes | unit tests only |
 
+## Addresses and tokens
+
+`https` is expected. Plain `http` is accepted for `localhost`, private network addresses and
+single-label or `.lan`/`.local` names; for anything else `runnerkit add` stops unless you pass
+`--allow-http`. If the server answers a request with a redirect to another host, runnerkit
+stops instead of following it, so the token never leaves the server you named.
+
 ## How the forge is chosen
 
 `runnerkit add owner/repo` means GitHub. For anything else give the address of the repository:

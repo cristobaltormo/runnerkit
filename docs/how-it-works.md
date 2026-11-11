@@ -4,16 +4,19 @@
 GitLab) does these things. Each forge is a provider in `internal/forge`; the steps are the same
 and only the runner and its API change (see [providers.md](providers.md)).
 
-1. Works out which forge it is, checks that the repository is private and that no runner with
+1. Works out which forge it is (the answers of the server must look like that forge; an
+   address that redirects to another host is refused so the token is never sent there), checks
+   that the repository is private and that no runner with
    that name is registered yet, so it never takes over another machine's runner by accident.
 2. Downloads the latest official runner of that forge for this operating system and
    architecture, checks its SHA-256 and puts it in the runnerkit data folder.
 3. Registers it. On GitHub it asks for a registration token and runs the runner's own
    `config.sh` (`config.cmd` on Windows), passing the token through the environment so other
-   users of the machine cannot read it from the process list. Forgejo and Gitea give a
-   registration token that is passed to `register`; GitLab creates a runner through its API
-   and registers the token it returns. Those two tokens appear on the command line of the
-   short `register` call.
+   users of the machine cannot read it from the process list. Gitea gives a registration token
+   that goes to `register` through `GITEA_RUNNER_REGISTRATION_TOKEN`; GitLab creates a runner
+   through its API and the token it returns goes to `register` through `CI_SERVER_TOKEN`.
+   Forgejo's runner only accepts its token as an argument, so on a shared machine that token
+   is visible in the process list for the second the `register` call lasts.
 4. Writes a user-level service that starts `runnerkit supervise` for this runner.
 5. Starts it and prints the `runs-on` line to put in your workflow.
 

@@ -39,9 +39,12 @@ dedicated account.
   exact scopes for each forge are in [providers.md](providers.md); on GitHub that is
   administration write access (a fine-grained token) or the `repo` scope (a classic token).
 - runnerkit uses it only while a command runs and never stores it.
-- The runner is registered with a short-lived registration token that the forge issues from
-  your token. On GitHub it is handed to the runner through its environment; the other forges'
-  runners only take it as an argument of the `register` call, which lasts a moment. It is
-  removed from any error message.
+- The runner is registered with a registration token that the forge issues from your token. On
+  GitHub, Gitea and GitLab it is handed to the runner through its environment. Forgejo's runner
+  only takes it as an argument of the `register` call, so on a shared machine it is visible in
+  the process list for a moment. It is removed from any error message.
+- runnerkit refuses server addresses that use plain `http` over the internet (private network
+  addresses and `localhost` are allowed) unless you pass `--allow-http`, and it never follows a
+  redirect to another host with your token.
 - Jobs do not inherit `GH_TOKEN`, `GITHUB_TOKEN`, `GITLAB_TOKEN`, `FORGEJO_TOKEN`,
   `GITEA_TOKEN` or `RUNNERKIT_TOKEN`.

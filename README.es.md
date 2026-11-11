@@ -91,7 +91,7 @@ runnerkit remove NOMBRE                    lo da de baja en GitHub y borra todo
 
 Otras opciones de `add`: `--name`, `--no-start`, `--no-pause-on-battery`, `--allow-public`,
 `--replace` (sustituye un runner del mismo nombre ya registrado en GitHub), `--forge` (si la
-dirección no dice de qué plataforma es) y `--runner-binary`.
+dirección no dice de qué plataforma es), `--runner-binary` y `--allow-http`.
 `clean --days N` cambia la antigüedad mínima de una carpeta de trabajo. `remove --force`
 borra en local cuando no se puede llegar a GitHub.
 
