@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.0 - 2026-11-11
 
 - Forgejo, Gitea and GitLab runners, chosen from the address of the repository, with the same commands as GitHub.
 - First version: `add`, `list`, `status`, `start`, `stop`, `restart`, `logs`, `clean`, `remove` and `doctor` on Linux, macOS and Windows.
