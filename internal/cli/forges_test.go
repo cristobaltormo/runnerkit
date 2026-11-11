@@ -145,6 +145,29 @@ func TestGogsIsExplainedNotInstalled(t *testing.T) {
 	}
 }
 
+func TestRemoveWithoutATokenStopsNothing(t *testing.T) {
+	f := newForgejoServer(t)
+	e := newEnv(t)
+	e.app.Mirrors = forge.Mirrors{ForgejoReleases: f.srv.URL + "/releases"}
+	e.app.Token = func(kind forge.Kind, flag string) (string, error) { return "tk", nil }
+	if code := e.app.Run([]string{"add", f.srv.URL + "/me/app", "--name", "fj", "--no-start"}); code != 0 {
+		t.Fatalf("add: %s", e.errBuf)
+	}
+	e.calls = nil
+	e.app.Token = func(kind forge.Kind, flag string) (string, error) { return "", fmt.Errorf("no token") }
+	if e.app.Run([]string{"remove", "fj"}) == 0 || !strings.Contains(e.errBuf.String(), "Nothing was stopped") {
+		t.Fatalf("remove without a token must fail early: %s", e.errBuf)
+	}
+	for _, c := range e.calls {
+		if strings.Contains(c, "stop") || strings.Contains(c, "kill") {
+			t.Errorf("the service must not be touched: %v", e.calls)
+		}
+	}
+	if _, err := e.app.store().Get("fj"); err != nil {
+		t.Error("the runner must still be recorded")
+	}
+}
+
 func TestPlainHTTPAndReplaceAreRefusedOutsideGitHub(t *testing.T) {
 	e := newEnv(t)
 	e.app.Token = func(kind forge.Kind, flag string) (string, error) { return "tk", nil }

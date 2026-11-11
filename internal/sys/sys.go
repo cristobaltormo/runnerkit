@@ -82,7 +82,7 @@ func (Host) Busy(dir string, rootPID int, style Style) bool {
 		return err == nil && WindowsWorkerIn(string(out), dir)
 	}
 	if rootPID <= 0 && dir != "" {
-		out, err := exec.Command("ps", "-A", "-o", "args=").Output()
+		out, err := exec.Command("ps", "-A", "-ww", "-o", "args=").Output()
 		return err == nil && WorkerInDir(string(out), dir)
 	}
 	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,comm=").Output()
@@ -108,7 +108,7 @@ func childrenBusy(dir string, rootPID int) bool {
 			`Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId)|$($_.ParentProcessId)|$($_.ExecutablePath)" }`).Output()
 		return err == nil && WindowsChildrenBusy(string(out), dir, rootPID)
 	}
-	out, err := exec.Command("ps", "-A", "-o", "pid=,ppid=,args=").Output()
+	out, err := exec.Command("ps", "-A", "-ww", "-o", "pid=,ppid=,args=").Output()
 	return err == nil && ChildrenBusy(string(out), dir, rootPID)
 }
 

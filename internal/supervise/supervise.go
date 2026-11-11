@@ -17,7 +17,10 @@ import (
 	"github.com/cristobaltormo/runnerkit/internal/sys"
 )
 
-const maxLogSize = 5 << 20
+const (
+	maxLogSize               = 5 << 20
+	idleChecksBeforeStopping = 3
+)
 
 type Config struct {
 	Name           string
@@ -190,6 +193,7 @@ func Run(ctx context.Context, cfg Config, log io.Writer) error {
 		go func() { exited <- cmd.Wait() }()
 
 		pausedForBattery := false
+		idleTicks := 0
 		ticker := time.NewTicker(cfg.Poll)
 	watch:
 		for {
@@ -198,7 +202,11 @@ func Run(ctx context.Context, cfg Config, log io.Writer) error {
 				logf("runner exited: %v", err)
 				break watch
 			case <-ticker.C:
-				if cfg.PauseOnBattery && cfg.Probe.OnBattery() && !cfg.Probe.Busy(cfg.Dir, cmd.Process.Pid, cfg.Style) {
+				if !cfg.PauseOnBattery || !cfg.Probe.OnBattery() || cfg.Probe.Busy(cfg.Dir, cmd.Process.Pid, cfg.Style) {
+					idleTicks = 0
+					continue
+				}
+				if idleTicks++; idleTicks >= idleChecksBeforeStopping {
 					logf("on battery and idle, stopping the runner")
 					stopChild(cmd, exited, cfg.Probe, grace)
 					pausedForBattery = true

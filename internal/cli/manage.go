@@ -79,6 +79,23 @@ func styleOf(r store.Runner) sys.Style {
 	return sys.ByChildren
 }
 
+func (a *App) busy(r store.Runner) bool {
+	style := styleOf(r)
+	samples := 1
+	if style == sys.ByChildren {
+		samples = 3
+	}
+	for i := 0; i < samples; i++ {
+		if a.Probe.Busy(r.Dir, 0, style) {
+			return true
+		}
+		if i < samples-1 {
+			time.Sleep(a.BusyGap)
+		}
+	}
+	return false
+}
+
 func batteryPolicy(r store.Runner) string {
 	if r.PauseOnBattery {
 		return "pauses when idle on battery"
@@ -100,7 +117,7 @@ func (a *App) cmdControl(action string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if action != "start" && !*force && a.Probe.Busy(r.Dir, 0, styleOf(r)) {
+	if action != "start" && !*force && a.busy(r) {
 		return fmt.Errorf("a job is running on %s; wait for it to finish or use --force", r.Name)
 	}
 	stop := a.Service.Stop
@@ -180,7 +197,7 @@ func (a *App) cmdClean(args []string) error {
 		if len(pos) > 0 && pos[0] != r.Name {
 			continue
 		}
-		if a.Probe.Busy(r.Dir, 0, styleOf(r)) {
+		if a.busy(r) {
 			fmt.Fprintf(a.Out, "%s: a job is running, skipped\n", r.Name)
 			continue
 		}
@@ -200,7 +217,7 @@ func (a *App) cmdClean(args []string) error {
 
 func (a *App) cmdRemove(args []string) error {
 	fs := a.flags("remove")
-	token := fs.String("token", "", "GitHub token")
+	token := fs.String("token", "", "access token")
 	force := fs.Bool("force", false, "delete even if a job is running or the server cannot be reached")
 	pos, err := parse(fs, args)
 	if err != nil {
@@ -213,20 +230,25 @@ func (a *App) cmdRemove(args []string) error {
 	if err != nil {
 		return err
 	}
-	if !*force && a.Probe.Busy(r.Dir, 0, styleOf(r)) {
+	if !*force && a.busy(r) {
 		return fmt.Errorf("a job is running on %s; wait for it to finish or use --force", r.Name)
+	}
+	var p forge.Provider
+	var providerErr error
+	if tok, err := a.Token(kindOf(r), *token); err != nil {
+		providerErr = err
+	} else {
+		p, providerErr = a.provider(kindOf(r), r.URL, tok)
+	}
+	if providerErr != nil && !*force {
+		return fmt.Errorf("could not unregister the runner from the server: %w\nNothing was stopped. Run again with --force to delete it locally anyway and remove it by hand on the server", providerErr)
 	}
 	if err := a.Service.StopNow(r.Name); err != nil {
 		fmt.Fprintf(a.Err, "note: could not stop %s: %v\n", r.Name, err)
 	}
 	remote := func() error {
-		tok, err := a.Token(kindOf(r), *token)
-		if err != nil {
-			return err
-		}
-		p, err := a.provider(kindOf(r), r.URL, tok)
-		if err != nil {
-			return err
+		if providerErr != nil {
+			return providerErr
 		}
 		return p.Deregister(forge.Record{Dir: r.Dir, Scope: r.Scope, Name: r.Name, RunnerID: r.RunnerID, GOOS: a.GOOS, Exec: forge.Exec(a.Exec)})
 	}

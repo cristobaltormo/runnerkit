@@ -37,6 +37,7 @@ type App struct {
 	IsRoot   func() bool
 	Token    func(kind forge.Kind, flag string) (string, error)
 	Mirrors  forge.Mirrors
+	BusyGap  time.Duration
 	Exec     func(dir string, env []string, name string, args ...string) error
 }
 
@@ -89,6 +90,7 @@ func newApp(version string) (*App, error) {
 		IsRoot:  func() bool { return runtime.GOOS != "windows" && os.Geteuid() == 0 },
 		Token:   forge.ResolveToken,
 		Exec:    runCommand,
+		BusyGap: 700 * time.Millisecond,
 	}, nil
 }
 
